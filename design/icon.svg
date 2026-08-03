@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Plexus</title>
+  <desc id="desc">Графитовая плитка с наклонённым голубым порталом и маленьким роботом, выглядывающим из него.</desc>
+  <defs>
+    <clipPath id="tile"><rect x="32" y="32" width="960" height="960" rx="240"/></clipPath>
+  </defs>
+
+  <!-- Графитовая плитка приложения -->
+  <rect x="32" y="32" width="960" height="960" rx="240" fill="#252B30"/>
+
+  <g clip-path="url(#tile)">
+    <!-- Портал: намеренно асимметричный, как в исходной иконке -->
+    <ellipse cx="452" cy="458" rx="235" ry="360" transform="rotate(43 452 458)"
+             fill="none" stroke="#A9C9EA" stroke-width="86"/>
+    <!-- Внутреннее свечение портала -->
+    <ellipse cx="452" cy="458" rx="148" ry="258" transform="rotate(43 452 458)"
+             fill="none" stroke="#A9C9EA" stroke-width="14" opacity="0.22"/>
+  </g>
+
+  <!-- Робот-проводник (оригинальный персонаж в духе Portal) -->
+  <g>
+    <!-- тень -->
+    <ellipse cx="700" cy="830" rx="126" ry="22" fill="#000000" opacity="0.28"/>
+    <!-- машущая рука (за корпусом) -->
+    <path d="M 622 692 Q 560 652 544 592" stroke="#E9E8EF" stroke-width="30"
+          stroke-linecap="round" fill="none"/>
+    <circle cx="544" cy="586" r="22" fill="#E9E8EF"/>
+    <!-- антенна с бронзовым огоньком -->
+    <line x1="700" y1="622" x2="700" y2="558" stroke="#AA816A" stroke-width="12" stroke-linecap="round"/>
+    <circle cx="700" cy="544" r="20" fill="#AA816A"/>
+    <!-- корпус-капсула -->
+    <rect x="606" y="614" width="188" height="200" rx="94" fill="#E9E8EF"/>
+    <!-- один большой глаз с голубой радужкой -->
+    <circle cx="700" cy="702" r="64" fill="#252B30"/>
+    <circle cx="700" cy="702" r="36" fill="#A9C9EA"/>
+    <circle cx="714" cy="688" r="11" fill="#E9E8EF"/>
+    <!-- ножки -->
+    <circle cx="664" cy="818" r="20" fill="#CFCEDD"/>
+    <circle cx="736" cy="818" r="20" fill="#CFCEDD"/>
+  </g>
+</svg>
