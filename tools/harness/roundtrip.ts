@@ -26,7 +26,7 @@ const { generateProject } = await import("../../src/core/codegen");
 
 const viewport = Number(process.argv[2] ?? 1440);
 const inline = process.argv.includes("--inline");
-const htmlPath = resolve(process.env.FIXTURE ?? "fixtures/cospex-site/index.html");
+const htmlPath = resolve(process.env.FIXTURE ?? "fixtures/cospex-lite/index.html");
 const dir = dirname(htmlPath);
 const html = readFileSync(htmlPath, "utf8");
 
@@ -108,3 +108,20 @@ for (const [name, n, note] of checks) {
   console.log(`  ${mark} ${name.padEnd(26)} ${String(n).padStart(4)}  ${note}`);
 }
 console.log(`\n  страница: ${(page.length / 1024).toFixed(1)} КБ, стили: ${(sheet.length / 1024).toFixed(1)} КБ\n`);
+
+/* Машиночитаемая строка для CI. Стенд сознательно НЕ решает сам, регрессия
+   это или нет: эталонные значения лежат в tools/ci/baseline.json и меняются
+   осознанной правкой в PR. Иначе гейт незаметно стареет вместе с кодом. */
+console.log(
+  `JSON ${JSON.stringify({
+    grid: count(/display:\s*grid/g, sheet),
+    gridTemplate: count(/grid-template-columns/g, sheet),
+    gridFullRow: count(/grid-column:\s*1\s*\/\s*-1/g, sheet),
+    georgia: count(/Georgia/g, sheet),
+    maxWidth: count(/max-width/g, sheet),
+    images: count(/<img/g, page),
+    semanticTags: count(/<(header|footer|nav|section)[\s>]/g, page),
+    pageBytes: page.length,
+    cssBytes: sheet.length,
+  })}\n`,
+);

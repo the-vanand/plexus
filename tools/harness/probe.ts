@@ -22,7 +22,7 @@ const { createStarterDocument } = await import("../../src/core/scene");
 const { measureStub } = await import("./measure-stub");
 type SceneNode = import("../../src/core/types").SceneNode;
 
-const htmlPath = resolve("fixtures/cospex-site/index.html");
+const htmlPath = resolve(process.env.FIXTURE ?? "fixtures/cospex-lite/index.html");
 const dir = dirname(htmlPath);
 const html = readFileSync(htmlPath, "utf8");
 let css = "";

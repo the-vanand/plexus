@@ -26,3 +26,7 @@ fixtures/cospex-site/
 Thumbs.db
 .idea
 *.swp
+
+# --- служебные копии агентов ---
+# Изолированные worktree, в которых работают агенты. Не исходники.
+.claude/
