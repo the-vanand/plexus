@@ -13,7 +13,7 @@
  */
 import type { DbTable, SceneDocument, SceneNode, Wire } from "./types";
 import { googleFontsUrl, resolveTheme, tokenCssVar, type ResolvedTheme } from "./themes";
-import { padBox } from "./scene";
+import { padBox, resolveNodeAt } from "./scene";
 
 /* ------------------------------------------------------------------ */
 /* Имена для Prisma: PascalCase моделей и camelCase полей              */
@@ -497,6 +497,79 @@ function cssForNode(node: SceneNode, parent: SceneNode | null, theme: ResolvedTh
   return d;
 }
 
+/* ------------------------------------------------------------------ */
+/* Адаптивность: блоки @media                                          */
+/* ------------------------------------------------------------------ */
+
+/** Узел, попавший в CSS: нужен и сам он, и его родитель (от него зависят декларации). */
+interface CssEntry {
+  node: SceneNode;
+  parent: SceneNode | null;
+  cls: string;
+}
+
+/**
+ * МЕДИАЗАПРОСЫ ИЗ ПЕРЕОПРЕДЕЛЕНИЙ.
+ *
+ * Три свойства вывода, за которые здесь отвечаем:
+ *
+ *  1. ПОРЯДОК от широкого к узкому. Специфичность у всех блоков одинаковая,
+ *     поэтому при ширине 600px побеждает тот, что идёт позже — узкий.
+ *     Отсюда и требование к doc.breakpoints быть отсортированным.
+ *  2. ТОЛЬКО ИЗМЕНЁННОЕ. Декларации считаются полным прогоном cssForNode на
+ *     разрешённом узле и сравниваются с ПРЕДЫДУЩИМ (более широким) звеном
+ *     каскада, а не с базой. Это ровно то, что уже действует в браузере на
+ *     этой ширине, поэтому в блок попадает минимальная дельта — и модель
+ *     каскада из scene.ts совпадает с каскадом CSS.
+ *  3. НИ ОДНОГО @media, если брейкпоинтов нет или переопределений нет:
+ *     пустые блоки не печатаются, и CSS остаётся прежним байт-в-байт.
+ */
+function mediaBlocksCss(doc: SceneDocument, entries: CssEntry[], theme: ResolvedTheme): string {
+  if (doc.breakpoints.length === 0) return "";
+
+  /** Декларации узла на брейкпоинте (null — база). */
+  const declsAt = (entry: CssEntry, bpId: string | null): Decl[] => {
+    const self = resolveNodeAt(entry.node, doc.breakpoints, bpId);
+    let parent: SceneNode | null = null;
+    if (entry.parent) {
+      const rp = resolveNodeAt(entry.parent, doc.breakpoints, bpId);
+      parent = { ...entry.parent, layout: rp.layout, style: rp.style };
+    }
+    const d = cssForNode({ ...entry.node, layout: self.layout, style: self.style }, parent, theme);
+    // скрытие — не свойство cssForNode: добавляем последним, чтобы победило
+    if (self.hidden) d.push(["display", "none"]);
+    return d;
+  };
+
+  const out: string[] = [];
+  for (let i = 0; i < doc.breakpoints.length; i++) {
+    const bp = doc.breakpoints[i];
+    const prevId = i === 0 ? null : doc.breakpoints[i - 1].id;
+    const rules: string[] = [];
+
+    for (const entry of entries) {
+      // узел без переопределений на всём каскаде до этой ширины пропускаем сразу
+      if (!entry.node.responsive && !(entry.parent && entry.parent.responsive)) continue;
+      const cur = declsAt(entry, bp.id);
+      const prev = new Map(declsAt(entry, prevId));
+      const changed: Decl[] = cur.filter(([p, v]) => prev.get(p) !== v);
+      // возврат из display:none: базовая декларация display могла совпасть с
+      // предыдущей ширины и не попасть в дельту — тогда узел остался бы скрыт
+      if (prev.get("display") === "none" && !changed.some(([p]) => p === "display")) {
+        changed.push(["display", cur.find(([p]) => p === "display")?.[1] ?? "block"]);
+      }
+      if (changed.length > 0) {
+        rules.push(`  .${entry.cls} {\n${changed.map(([p, v]) => `    ${p}: ${v};`).join("\n")}\n  }`);
+      }
+    }
+
+    if (rules.length > 0) {
+      out.push(`/* ${bp.name} */\n@media (max-width: ${Math.round(bp.maxWidth)}px) {\n${rules.join("\n")}\n}`);
+    }
+  }
+  return out.length === 0 ? "" : `\n${out.join("\n\n")}\n`;
+}
+
 function tagFor(node: SceneNode): string {
   if (node.href && (node.type === "text" || node.type === "button")) return "a";
   // семантические роли: header/footer/nav/section вместо анонимных div
@@ -587,6 +660,8 @@ export function generateProject(doc: SceneDocument, siteName = "Plexus Site"): G
     return base;
   };
 
+  // все узлы, попавшие в CSS — из них собираются блоки @media
+  const cssEntries: CssEntry[] = [];
   // узлы с «затвердеванием на скролле» и с reveal-анимацией — для script.js
   const scrollNodes: SceneNode[] = [];
   const revealNodes: SceneNode[] = [];
@@ -596,6 +671,7 @@ export function generateProject(doc: SceneDocument, siteName = "Plexus Site"): G
     const node = doc.nodes[id]!;
     const cls = className(node);
     classes.set(node.id, cls);
+    cssEntries.push({ node, parent, cls });
     const decls = cssForNode(node, parent, theme);
     if (decls.length > 0) {
       cssBlocks.push(`.${cls} {\n${decls.map(([p, v]) => `  ${p}: ${v};`).join("\n")}\n}`);
@@ -854,7 +930,7 @@ body {
 }
 ${hiddenCss}${smartCss}${pagesNavCss}
 ${cssBlocks.join("\n\n")}
-`;
+${mediaBlocksCss(doc, cssEntries, theme)}`;
 
   if (doc.siteTarget === "next") {
     return { files: generateNextProject(doc, siteName, files["site/styles.css"], pageFiles, classes) };

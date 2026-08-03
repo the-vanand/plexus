@@ -1549,3 +1549,68 @@ button.tab {
 }
 
 .linklike:hover { color: var(--accent); }
+
+/* ============ адаптивные брейкпоинты ============ */
+
+/* Переключатель в статусбаре: база и брейкпоинты документа. */
+.sb-bp {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.sb-bp-btn {
+  padding: 0 6px;
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 18px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.sb-bp-btn:hover { color: var(--text); border-color: var(--line); }
+
+.sb-bp-btn.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+/* Шапка инспектора: в каком брейкпоинте идёт правка. Заметная рамка здесь —
+   не украшение: она единственный признак, что значения уйдут не в базу. */
+.insp-bp {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  background: var(--surface-2);
+}
+
+.insp-bp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.insp-bp-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.insp-bp-hint {
+  margin: 3px 0 6px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+
+.insp-bp-hide {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.insp-bp-chips { margin-top: 6px; }

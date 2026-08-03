@@ -9,7 +9,7 @@
  */
 import { create } from "zustand";
 import type {
-  ContainerType, DbField, DbProvider, LayoutType, NodeType, SceneDocument, SceneNode,
+  ContainerType, DbField, DbProvider, LayoutProps, LayoutType, NodeType, SceneDocument, SceneNode,
   SiteTarget, SpaceValue, WireAction,
 } from "./types";
 import {
@@ -19,10 +19,18 @@ import {
   isContainerLike,
   materialize,
   normalizeDoc,
+  previousBreakpointId,
+  pruneOverrides,
+  resolveNodeAt,
+  RESPONSIVE_LAYOUT_KEYS,
+  RESPONSIVE_STYLE_KEYS,
+  setOverride,
+  splitResponsivePatch,
   WIRE_ACTION_LABELS,
   type NodeSpec,
   type NodeInit,
 } from "./scene";
+import { useUi } from "./uiStore";
 import { generateProject } from "./codegen";
 import { importHtmlToDoc, type ImportOutcome } from "./importer";
 import { BLOCK_BY_TYPE, type BlockType } from "./blocks";
@@ -93,8 +101,16 @@ interface PlexusState {
   addFrameAt: (wx: number, wy: number) => string;
   setSrc: (id: string, src: string) => void;
   setHref: (id: string, href: string) => void;
+  /**
+   * Правка свойств узла. При активном брейкпоинте адаптивная часть патча
+   * уходит в переопределения, остальное — в базу (см. реализацию).
+   */
   updateLayout: (id: string, patch: Partial<SceneDocument["nodes"][string]["layout"]>) => void;
   updateStyle: (id: string, patch: Partial<SceneDocument["nodes"][string]["style"]>) => void;
+  /** Скрыть/показать узел на брейкпоинте. */
+  setNodeHiddenAt: (id: string, breakpointId: string, hidden: boolean) => void;
+  /** Сбросить все переопределения узла на брейкпоинте. */
+  clearOverrides: (id: string, breakpointId: string) => void;
   setText: (id: string, text: string) => void;
   rename: (id: string, name: string) => void;
   removeNodes: (ids: string[]) => void;
@@ -275,6 +291,43 @@ export function getInsertTarget(): string | null {
   return s.doc.rootFrames[0] ?? null;
 }
 
+/**
+ * Активный брейкпоинт редактирования — из состояния интерфейса, но только
+ * если он реально есть в документе. Так переключатель не может заставить
+ * писать переопределения в брейкпоинт, который уже удалили.
+ */
+function activeBreakpointOf(doc: SceneDocument): string | null {
+  const id = useUi.getState().activeBreakpoint;
+  return id && doc.breakpoints.some((b) => b.id === id) ? id : null;
+}
+
+/**
+ * Записывает НОВЫЙ ЦЕЛИКОМ layout узла с учётом активного брейкпоинта.
+ *
+ * Пресеты раскладки и контейнера не патчат отдельные поля, а пересобирают
+ * layout полностью. На брейкпоинте писать его в базу нельзя (пресет «стек»
+ * для телефона снёс бы сетку на десктопе), поэтому берётся ДИФФ против того,
+ * что уже действует на этой ширине, и только он ложится в переопределение.
+ */
+function writeLayout(doc: SceneDocument, node: SceneNode, next: LayoutProps): void {
+  const bp = activeBreakpointOf(doc);
+  if (!bp) {
+    node.layout = next;
+    return;
+  }
+  const inherited = resolveNodeAt(node, doc.breakpoints, previousBreakpointId(doc.breakpoints, bp))
+    .layout as unknown as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  const base: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(next)) {
+    if (JSON.stringify(v) === JSON.stringify(inherited[k])) continue;
+    if (RESPONSIVE_LAYOUT_KEYS.has(k)) patch[k] = v;
+    else base[k] = v;
+  }
+  setOverride(node, bp, "layout", patch);
+  if (Object.keys(base).length > 0) Object.assign(node.layout, base);
+}
+
 const snapshot = (doc: SceneDocument): string => JSON.stringify(doc);
 
 function pushHistory(doc: SceneDocument): void {
@@ -391,7 +444,7 @@ export const useStore = create<PlexusState>()((set, get) => {
       const node = doc.nodes[id];
       if (!node) return;
       pushHistory(get().doc);
-      node.layout = applyLayoutPreset(node.layout, preset, resolveTheme(doc.theme));
+      writeLayout(doc, node, applyLayoutPreset(resolveNodeAt(node, doc.breakpoints, activeBreakpointOf(doc)).layout, preset, resolveTheme(doc.theme)));
       commit(doc);
       const label = LAYOUT_PRESETS.find((l) => l.type === preset)?.label ?? preset;
       get().log("info", `Раскладка «${node.name}» → ${label}`);
@@ -402,7 +455,7 @@ export const useStore = create<PlexusState>()((set, get) => {
       const node = doc.nodes[id];
       if (!node) return;
       pushHistory(get().doc);
-      node.layout = applyContainerPreset(node.layout, container, gutter ?? "md", resolveTheme(doc.theme));
+      writeLayout(doc, node, applyContainerPreset(resolveNodeAt(node, doc.breakpoints, activeBreakpointOf(doc)).layout, container, gutter ?? "md", resolveTheme(doc.theme)));
       commit(doc);
       const label = CONTAINER_PRESETS.find((c) => c.type === container)?.label ?? container;
       get().log("info", `Контейнер «${node.name}» → ${label}`);
@@ -507,15 +560,57 @@ export const useStore = create<PlexusState>()((set, get) => {
     updateLayout: (id, patch) => {
       const doc = draft();
       pushHistory(get().doc);
-      Object.assign(doc.nodes[id]!.layout, patch);
+      const node = doc.nodes[id]!;
+      /* ПРАВКА НА БРЕЙКПОИНТЕ идёт в переопределения, а не в базу — иначе,
+         подгоняя страницу под телефон, пользователь ломал бы десктоп.
+         Неадаптивная часть патча всё равно ложится в базу. */
+      const bp = activeBreakpointOf(doc);
+      if (bp) {
+        const { override, base } = splitResponsivePatch(patch, RESPONSIVE_LAYOUT_KEYS);
+        setOverride(node, bp, "layout", override as Record<string, unknown>);
+        if (Object.keys(base).length > 0) Object.assign(node.layout, base);
+      } else {
+        Object.assign(node.layout, patch);
+      }
       commit(doc);
     },
 
     updateStyle: (id, patch) => {
       const doc = draft();
       pushHistory(get().doc);
-      Object.assign(doc.nodes[id]!.style, patch);
+      const node = doc.nodes[id]!;
+      const bp = activeBreakpointOf(doc);
+      if (bp) {
+        const { override, base } = splitResponsivePatch(patch, RESPONSIVE_STYLE_KEYS);
+        setOverride(node, bp, "style", override as Record<string, unknown>);
+        if (Object.keys(base).length > 0) Object.assign(node.style, base);
+      } else {
+        Object.assign(node.style, patch);
+      }
       commit(doc);
+    },
+
+    setNodeHiddenAt: (id, breakpointId, hidden) => {
+      const doc = draft();
+      pushHistory(get().doc);
+      const node = doc.nodes[id]!;
+      const all = (node.responsive ??= {});
+      const ov = (all[breakpointId] ??= {});
+      if (hidden) ov.hidden = true;
+      else delete ov.hidden;
+      pruneOverrides(node, breakpointId);
+      commit(doc);
+    },
+
+    clearOverrides: (id, breakpointId) => {
+      const doc = draft();
+      const node = doc.nodes[id]!;
+      if (!node.responsive?.[breakpointId]) return;
+      pushHistory(get().doc);
+      delete node.responsive[breakpointId];
+      if (Object.keys(node.responsive).length === 0) delete node.responsive;
+      commit(doc);
+      get().log("info", "Переопределения брейкпоинта сброшены");
     },
 
     setSrc: (id, src) => {
