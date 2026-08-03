@@ -1,0 +1,26 @@
+[package]
+name = "plexus"
+version = "0.11.0"
+description = "Plexus — визуальная full-stack IDE"
+authors = ["Plexus"]
+edition = "2021"
+
+# Библиотечная цель нужна Tauri для мобильных таргетов в будущем
+[lib]
+name = "plexus_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
