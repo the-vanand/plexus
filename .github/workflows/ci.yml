@@ -1,0 +1,35 @@
+name: Проверки
+
+on:
+  pull_request:
+    branches: ["**"]
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Установка зависимостей
+        run: npm ci
+
+      - name: Стенды и типы
+        run: |
+          set -o pipefail
+          node tools/ci/checks.mjs 2>&1 | tee /tmp/checks.txt
+
+      - name: Сводка
+        if: always()
+        run: |
+          echo '### Проверки' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/checks.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo 'вывод недоступен' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
