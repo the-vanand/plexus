@@ -175,12 +175,31 @@ function ratioCss(ratio: number): string {
   return hit ? hit[1] : `${Math.round(ratio * 1000)} / 1000`;
 }
 
-/** Путь к ассету в собранном сайте: абсолютные и data-URI не трогаем. */
+/**
+ * Путь к ассету в СОБРАННОМ сайте.
+ *
+ * Раньше условие включало ведущий `/`, и путь файловой системы вида
+ * `/home/user/proj/assets/hero.jpeg` уезжал в разметку дословно. Такой сайт
+ * нельзя отдать заказчику: на другой машине картинок нет, а заодно наружу
+ * утекает раскладка каталогов автора. На Windows баг не проявлялся —
+ * `C:\…` не совпадал с условием и попадал в ветку с basename, то есть
+ * поведение ещё и расходилось между платформами.
+ *
+ * Правило теперь одно: настоящие адреса оставляем как есть, всё остальное —
+ * локальный файл, который экспорт кладёт в `site/assets`, поэтому и ссылка
+ * должна быть `assets/<имя>`.
+ *
+ * Протокол-относительный `//cdn.example.com/x.png` — тоже настоящий адрес,
+ * хотя и начинается со слэша; его обязательно сохранить, иначе сломается
+ * импорт сайтов, которые так ссылаются на CDN.
+ */
 function assetHref(src: string): string {
   const s = src.trim();
-  if (/^(https?:|data:|\/)/i.test(s)) return s;
+  if (!s) return s;
+  if (/^(https?:|data:|blob:)/i.test(s) || s.startsWith("//")) return s;
+  if (s.startsWith("assets/")) return s;
   const file = s.split(/[\\/]/).pop() ?? s;
-  return s.startsWith("assets/") ? s : `assets/${file}`;
+  return `assets/${file}`;
 }
 
 function cssForNode(node: SceneNode, parent: SceneNode | null, theme: ResolvedTheme): Decl[] {
@@ -749,7 +768,9 @@ export function generateProject(doc: SceneDocument, siteName = "Plexus Site"): G
       return `${pad}<div class="${cls}" ${anchor}>\n${inner}\n${pad}</div>`;
     }
     if (node.type === "image") {
-      const src = node.src ?? "https://placehold.co/600x400";
+      /* Через assetHref, как и фоновая картинка: иначе локальный путь
+         попадает в разметку дословно и сайт нельзя перенести. */
+      const src = assetHref(node.src ?? "https://placehold.co/600x400");
       return `${pad}<img class="${cls}" ${anchor} src="${esc(src)}" alt="${esc(node.name)}" />`;
     }
     if (node.type === "input") {
@@ -1243,7 +1264,7 @@ function generateNextProject(
       return `${pad}<div className="${cls}" ${anchor}>\n${inner}\n${pad}</div>`;
     }
     if (node.type === "image") {
-      const src = node.src ?? "https://placehold.co/600x400";
+      const src = assetHref(node.src ?? "https://placehold.co/600x400");
       return `${pad}<img className="${cls}" ${anchor} src="${esc(src)}" alt="${esc(node.name)}" />`;
     }
     if (node.type === "input") {

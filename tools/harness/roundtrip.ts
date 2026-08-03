@@ -121,6 +121,13 @@ console.log(
     maxWidth: count(/max-width/g, sheet),
     images: count(/<img/g, page),
     semanticTags: count(/<(header|footer|nav|section)[\s>]/g, page),
+    /* Абсолютные пути файловой системы в собранном сайте — брак: на другой
+       машине картинок нет, а раскладка каталогов автора утекает наружу.
+       Ищем только в src и url(): href может законно вести на корень сайта.
+       Протокол-относительные //cdn… исключены явно — это адреса, не пути.
+       Буква диска ищется с оглядкой назад: без неё «s:/» внутри https://
+       давало три ложных срабатывания на ссылках предзагрузки шрифтов. */
+    absPaths: count(/src="\/(?!\/)|url\(["']?\/(?!\/)|(?<![A-Za-z])[A-Za-z]:[\\/]/g, page + sheet),
     pageBytes: page.length,
     cssBytes: sheet.length,
   })}\n`,
