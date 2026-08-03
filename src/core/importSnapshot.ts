@@ -24,6 +24,7 @@
  */
 import type { GridTrack, LayoutType, SceneDocument, SceneNode, Sides } from "./types";
 import { createNode, packPadding } from "./scene";
+import { withDeterministicIds } from "./ids";
 import { matchBySignature, matchByUrl, type WidgetMatch } from "./css/widgets";
 import { snapColor, snapPx, snapTracks, type PageSnapshot, type SnapNode } from "./snapshot";
 
@@ -52,7 +53,27 @@ const INLINE = new Set([
 
 const FIELD_TAGS = new Set(["input", "textarea", "select"]);
 
+/**
+ * Импорт снимка с ДЕТЕРМИНИРОВАННЫМИ id (см. `withDeterministicIds`).
+ *
+ * Для снимка это важнее, чем для разбора HTML: снимок — это зафиксированный
+ * файл, и повторный прогон обязан давать тот же документ, иначе стенд не
+ * отличит регрессию решателя от смены случайных id.
+ */
 export function importSnapshotToDoc(
+  doc: SceneDocument,
+  opts: SnapshotImportOptions,
+): SnapshotImportOutcome {
+  const seed = [
+    opts.snapshot.url,
+    opts.snapshot.viewportWidth,
+    opts.snapshot.nodes.length,
+    Object.keys(doc.nodes).length,
+  ].join("|");
+  return withDeterministicIds(seed, () => importSnapshotToDocInner(doc, opts));
+}
+
+function importSnapshotToDocInner(
   doc: SceneDocument,
   opts: SnapshotImportOptions,
 ): SnapshotImportOutcome {

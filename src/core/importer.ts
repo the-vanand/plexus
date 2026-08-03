@@ -36,6 +36,7 @@ import {
   averageGradientColor, defaultCtx, evalLength, extractUrl, hasGradient, parseColor,
   resolveVars, splitWords, type LengthCtx,
 } from "./css/values";
+import { withDeterministicIds } from "./ids";
 import { analyzeSource, type SourceReport } from "./css/source";
 import { matchBySignature, matchByUrl, type WidgetMatch } from "./css/widgets";
 
@@ -104,7 +105,26 @@ interface WalkCtx {
   parentIsGrid: boolean;
 }
 
+/**
+ * Импорт с ДЕТЕРМИНИРОВАННЫМИ id узлов.
+ *
+ * Разбор одного и того же исходника при той же ширине обязан давать один и
+ * тот же документ — иначе вывод кодогена меняется от прогона к прогону и его
+ * нельзя ни сравнить побайтово, ни держать в git. В затравку входит число
+ * уже существующих узлов: два импорта одного сайта в один документ должны
+ * получить РАЗНЫЕ id, иначе документ разрушится.
+ */
 export function importHtmlToDoc(doc: SceneDocument, opts: ImportOptions): ImportOutcome {
+  const seed = [
+    opts.baseUrl ?? opts.sourceDir ?? opts.pageName,
+    opts.viewportWidth ?? 0,
+    opts.html.length,
+    Object.keys(doc.nodes).length,
+  ].join("|");
+  return withDeterministicIds(seed, () => importHtmlToDocInner(doc, opts));
+}
+
+function importHtmlToDocInner(doc: SceneDocument, opts: ImportOptions): ImportOutcome {
   const warnings: string[] = [];
   const imagesToCopy: ImportOutcome["imagesToCopy"] = [];
   const fontFamilies = new Set<string>();
