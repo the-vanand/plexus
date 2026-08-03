@@ -15,8 +15,9 @@ import {
   type BlockCategory, type BlockDefinition, type ElementDefinition,
 } from "../core/blocks";
 import { NODE_LABELS } from "../core/scene";
+import { TemplatesPanel } from "./TemplatesPanel";
 
-type Tab = "blocks" | "elements";
+type Tab = "blocks" | "elements" | "templates";
 
 export function ToolsPanel() {
   const insertBlock = useStore((s) => s.insertBlock);
@@ -79,6 +80,9 @@ export function ToolsPanel() {
         <button className={`tools-tab${tab === "elements" ? " on" : ""}`} onClick={() => setTab("elements")}>
           Элементы
         </button>
+        <button className={`tools-tab${tab === "templates" ? " on" : ""}`} onClick={() => setTab("templates")}>
+          Шаблоны
+        </button>
       </div>
 
       <div className="tools-search">
@@ -101,7 +105,9 @@ export function ToolsPanel() {
         </div>
       )}
 
-      {tab === "blocks" ? (
+      {tab === "templates" ? (
+        <TemplatesPanel />
+      ) : tab === "blocks" ? (
         <>
           <div className="tools-cats">
             <button className={`cat-chip${category === "all" ? " on" : ""}`} onClick={() => setCategory("all")}>
