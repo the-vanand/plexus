@@ -1,0 +1,40 @@
+/*
+ * ДИЗАЙН-ТОКЕНЫ PLEXUS.
+ * Фирменная палитра:
+ *   #252b30 — графит (основной фон IDE)
+ *   #a9c9ea — голубой (акцент, выделение, «портал»)
+ *   #aa816a — бронза (направляющие, вторичный акцент)
+ *   #e9e8ef — светлый (текст, поверхности)
+ */
+:root {
+  /* базовые цвета бренда */
+  --graphite: #252b30;
+  --sky: #a9c9ea;
+  --bronze: #aa816a;
+  --paper: #e9e8ef;
+
+  /* производные поверхности (тона графита) */
+  --surface-0: #1d2226; /* холст, самые глубокие зоны */
+  --surface-1: #252b30; /* фон приложения */
+  --surface-2: #2c333a; /* панели */
+  --surface-3: #343c44; /* ховеры, поля ввода */
+  --line: #3a424b;      /* разделители */
+
+  /* текст */
+  --text: var(--paper);
+  --text-muted: #9aa4ae;
+  --text-dim: #6d7883;
+
+  /* семантика */
+  --accent: var(--sky);
+  --accent-ink: #16324b;    /* текст на голубом */
+  --guide: var(--bronze);
+  --danger: #e0705e;
+  --ok: #7fc99a;
+
+  /* геометрия и типографика */
+  --radius: 8px;
+  --radius-sm: 6px;
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+}
