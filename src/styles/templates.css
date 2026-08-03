@@ -1,0 +1,90 @@
+/**
+ * СТИЛИ ПАНЕЛИ ШАБЛОНОВ СТРАНИЦ.
+ *
+ * Переиспользует переменные темы из tokens.css и классы .tools-* из app.css.
+ * Этот файл добавляет только то, чего нет в общих стилях.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Список шаблонов                                                     */
+/* ------------------------------------------------------------------ */
+
+.tmpl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Карточка шаблона                                                    */
+/* ------------------------------------------------------------------ */
+
+.tmpl-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s, border-color 0.12s;
+  width: 100%;
+}
+
+.tmpl-card:hover {
+  background: var(--surface);
+  border-color: var(--accent);
+}
+
+.tmpl-card:active {
+  background: var(--surface);
+  opacity: 0.8;
+}
+
+.tmpl-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.tmpl-card-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------ */
+/* Счётчик секций                                                      */
+/* ------------------------------------------------------------------ */
+
+.tmpl-card-meta {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+  opacity: 0.7;
+}
+
+/* ------------------------------------------------------------------ */
+/* Группа по категории                                                 */
+/* ------------------------------------------------------------------ */
+
+.tmpl-group {
+  margin-bottom: 4px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Состояние «вставлено» (краткая анимация)                           */
+/* ------------------------------------------------------------------ */
+
+.tmpl-card.inserted {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
