@@ -5,7 +5,7 @@
  * жалуется заказчик: ширину страницы, переполнения (текст «съезжает»),
  * покрытие стилей и число дошедших картинок.
  *
- *   npx tsx tools/harness/report.ts fixtures/cospex-site/index.html [ширина]
+ *   npx tsx tools/harness/report.ts fixtures/cospex-lite/index.html [ширина]
  */
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -31,7 +31,7 @@ type Rect = import("../../src/core/types").Rect;
 /* Загрузка фикстуры                                                   */
 /* ------------------------------------------------------------------ */
 
-const htmlPath = resolve(process.argv[2] ?? "fixtures/cospex-site/index.html");
+const htmlPath = resolve(process.argv[2] ?? "fixtures/cospex-lite/index.html");
 const viewport = Number(process.argv[3] ?? 1440);
 const dir = dirname(htmlPath);
 const html = readFileSync(htmlPath, "utf8");
