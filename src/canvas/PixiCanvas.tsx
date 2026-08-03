@@ -7,8 +7,8 @@ import { useEffect, useRef, useState } from "react";
 import { Application } from "pixi.js";
 import { computeLayout } from "../core/layout";
 import { useStore } from "../core/store";
-import type { Rect } from "../core/types";
-import { INSERT_PRESETS, WIRE_ACTION_LABELS } from "../core/scene";
+import type { Rect, SceneDocument } from "../core/types";
+import { INSERT_PRESETS, WIRE_ACTION_LABELS, resolveDocAt } from "../core/scene";
 import { clearMeasureCache, measureText } from "./measure";
 import { ensureThemeFonts, resolveTheme } from "../core/themes";
 import { useUi } from "../core/uiStore";
@@ -65,10 +65,25 @@ export function PixiCanvas({ onZoomChange }: { onZoomChange: (zoom: number) => v
 
       const renderer = new CanvasRenderer(pixi);
       let rects: Map<string, Rect> = new Map();
+      /**
+       * Документ, который РИСУЕТСЯ. При активном брейкпоинте он отличается от
+       * того, что лежит в сторе: узлы несут разрешённые значения, скрытые
+       * выброшены из дерева. Рисовать базовый документ с геометрией
+       * брейкпоинта нельзя — кегли и выравнивание разошлись бы с раскладкой.
+       * Правки по-прежнему уходят в настоящий документ через действия стора.
+       */
+      let view: SceneDocument = useStore.getState().doc;
 
       const computeRects = (): void => {
         const s = useStore.getState();
-        rects = computeLayout(s.doc, measureText);
+        const bpId = useUi.getState().activeBreakpoint;
+        const bp = bpId ? s.doc.breakpoints.find((b) => b.id === bpId) : undefined;
+        view = bpId ? resolveDocAt(s.doc, bpId) : s.doc;
+        rects = computeLayout(
+          s.doc,
+          measureText,
+          bpId ? { width: bp?.maxWidth, breakpointId: bpId } : undefined,
+        );
         // высоты содержимого страниц — для кнопки «Подогнать под содержимое»
         const map: Record<string, number> = {};
         for (const fid of s.doc.rootFrames) {
@@ -83,7 +98,7 @@ export function PixiCanvas({ onZoomChange }: { onZoomChange: (zoom: number) => v
         const s = useStore.getState();
         const c = controller!;
         renderer.render({
-          doc: s.doc,
+          doc: view,
           rects,
           camera: c.camera,
           selection: s.selection,
@@ -174,8 +189,17 @@ export function PixiCanvas({ onZoomChange }: { onZoomChange: (zoom: number) => v
         }
         scheduleDraw();
       });
-      /* переключатели интерфейса (сетка и пр.) тоже перерисовывают холст */
-      const unsubUi = useUi.subscribe(() => scheduleDraw());
+      /* Переключатели интерфейса (сетка и пр.) тоже перерисовывают холст.
+         Но смена брейкпоинта — не косметика: меняется сама раскладка,
+         поэтому одной перерисовки недостаточно, нужен пересчёт. */
+      let lastBp = useUi.getState().activeBreakpoint;
+      const unsubUi = useUi.subscribe((u) => {
+        if (u.activeBreakpoint !== lastBp) {
+          lastBp = u.activeBreakpoint;
+          computeRects();
+        }
+        scheduleDraw();
+      });
 
       /* ВАЖНО: Pixi resizeTo слушает только resize окна — при сворачивании
          панелей контейнер меняется без события. ResizeObserver чинит

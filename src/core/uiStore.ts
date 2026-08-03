@@ -22,6 +22,15 @@ interface UiState {
   importWidth: number;
   /** Режим левой панели: проект или каталог инструментов. */
   leftTab: "project" | "tools";
+  /**
+   * АКТИВНЫЙ БРЕЙКПОИНТ РЕДАКТИРОВАНИЯ (null — базовое состояние).
+   *
+   * Живёт в состоянии интерфейса, а не в документе: это режим работы
+   * пользователя, а не свойство страницы. И НЕ переживает перезапуск
+   * специально — режим, в котором правки молча уходят в переопределения,
+   * не должен восстанавливаться сам, иначе следующая правка «не там».
+   */
+  activeBreakpoint: string | null;
 
   setLeftW: (w: number) => void;
   setRightW: (w: number) => void;
@@ -33,6 +42,7 @@ interface UiState {
   toggleGridSnap: () => void;
   setImportWidth: (w: number) => void;
   setLeftTab: (t: "project" | "tools") => void;
+  setActiveBreakpoint: (id: string | null) => void;
   resetLayout: () => void;
 }
 
@@ -81,6 +91,7 @@ export const useUi = create<UiState>()((set, get) => {
 
   return {
     ...load(),
+    activeBreakpoint: null,
     setLeftW: (w) => set(after({ leftW: clamp(w, 160, 480) })),
     setRightW: (w) => set(after({ rightW: clamp(w, 200, 520) })),
     setBottomH: (h) => set(after({ bottomH: clamp(h, 100, 520) })),
@@ -91,6 +102,8 @@ export const useUi = create<UiState>()((set, get) => {
     toggleGridSnap: () => set(after({ gridSnap: !get().gridSnap })),
     setImportWidth: (w) => set(after({ importWidth: clamp(Math.round(w), 320, 2560) })),
     setLeftTab: (leftTab) => set(after({ leftTab })),
-    resetLayout: () => set(after({ ...defaults })),
+    // без after(): активный брейкпоинт намеренно не сохраняется в localStorage
+    setActiveBreakpoint: (activeBreakpoint) => set({ activeBreakpoint }),
+    resetLayout: () => set(after({ ...defaults, activeBreakpoint: null })),
   };
 });

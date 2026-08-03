@@ -18,7 +18,7 @@
  *     и перенос не совпадал с оригиналом.
  */
 import type { GridTrack, MeasureFn, Rect, SceneDocument, SceneNode, SizeMode } from "./types";
-import { isContainerLike, padBox } from "./scene";
+import { breakpointForWidth, isContainerLike, padBox, resolveDocAt } from "./scene";
 import { resolveTheme } from "./themes";
 
 const BUTTON_PAD_X = 20;
@@ -28,8 +28,43 @@ const MIN_FILL = 24;
 const DEFAULT_IMAGE_RATIO = 1.5;
 const ZERO_SIDES = { t: 0, r: 0, b: 0, l: 0 } as const;
 
-export function computeLayout(doc: SceneDocument, measure: MeasureFn): Map<string, Rect> {
+/**
+ * Опции расчёта под конкретную ширину экрана. Оба поля необязательны, и это
+ * принципиально: вызов `computeLayout(doc, measure)` — базовое состояние
+ * страницы, как и до появления брейкпоинтов.
+ */
+export interface LayoutOptions {
+  /**
+   * Ширина вьюпорта. Корневые фреймы считаются по ней вместо собственной
+   * ширины — так холст показывает страницу «как на телефоне».
+   */
+  width?: number;
+  /**
+   * Брейкпоинт, чьи переопределения применять. Если не задан, а задана
+   * width — берётся тот, что действует при этой ширине (как в CSS).
+   */
+  breakpointId?: string | null;
+}
+
+export function computeLayout(
+  doc: SceneDocument,
+  measure: MeasureFn,
+  options?: LayoutOptions,
+): Map<string, Rect> {
   const rects = new Map<string, Rect>();
+
+  /* РАЗРЕШЕНИЕ БРЕЙКПОИНТА — единственное место, где решатель знает про
+     адаптивность. Дальше работаем с обычным документом: узлы уже несут
+     итоговые layout/style, скрытые из дерева выброшены. */
+  const activeBp =
+    options?.breakpointId !== undefined
+      ? options.breakpointId
+      : options?.width !== undefined
+        ? (breakpointForWidth(doc.breakpoints, options.width)?.id ?? null)
+        : null;
+  doc = resolveDocAt(doc, activeBp);
+  const forcedW = options?.width;
+
   const theme = resolveTheme(doc.theme);
 
   /**
@@ -596,7 +631,9 @@ export function computeLayout(doc: SceneDocument, measure: MeasureFn): Map<strin
      высоты фрейма, рамка вырастает (fixed height = минимум, не максимум). */
   for (const frameId of doc.rootFrames) {
     const frame = doc.nodes[frameId]!;
-    const w = typeof frame.layout.width === "number" ? frame.layout.width : Math.max(320, intrinsicW(frame));
+    // заданная ширина вьюпорта важнее собственной ширины страницы: именно так
+    // получается предпросмотр «страница на 640» без правки документа
+    const w = forcedW ?? (typeof frame.layout.width === "number" ? frame.layout.width : Math.max(320, intrinsicW(frame)));
     wCache.clear();
     place(frame, frame.layout.x, frame.layout.y, w);
   }

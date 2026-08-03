@@ -5,8 +5,9 @@
  */
 import { useState } from "react";
 import { useStore } from "../core/store";
+import { useUi } from "../core/uiStore";
 import type { PaddingValue, SceneNode, Sides, SizeMode } from "../core/types";
-import { NODE_LABELS, WIRE_ACTION_LABELS, packPadding, padBox } from "../core/scene";
+import { NODE_LABELS, WIRE_ACTION_LABELS, packPadding, padBox, resolveNodeAt } from "../core/scene";
 import {
   COLOR_TOKENS, resolveColor, resolveTheme, SPACE_LABELS, SPACE_SCALE, type ResolvedTheme,
 } from "../core/themes";
@@ -224,6 +225,89 @@ function ColorField({
 
 /* ---------- сам инспектор ---------- */
 
+/* ---------- адаптивность ---------- */
+
+/** Человекочитаемые имена адаптивных свойств — для пометок «переопределено». */
+const RESPONSIVE_LABELS: Record<string, string> = {
+  width: "ширина", height: "высота", maxWidth: "макс. ширина", centered: "центрирование",
+  direction: "направление", gap: "зазор", rowGap: "зазор рядов", padding: "отступы",
+  margin: "внешние отступы", align: "выравнивание", justify: "распределение",
+  preset: "раскладка", columns: "колонки", autoGrid: "авто-сетка", sidebar: "сайдбар",
+  gridTracks: "дорожки", gridSpan: "span", wrap: "перенос", container: "контейнер",
+  fontSize: "кегль", fontWeight: "насыщенность", lineHeight: "интерлиньяж",
+  letterSpacing: "трекинг", textAlign: "выравнивание текста", uppercase: "заглавные",
+};
+
+/**
+ * ШАПКА РЕЖИМА БРЕЙКПОИНТА.
+ *
+ * Главное, что она решает — чтобы правка «не там» была невозможна незаметно:
+ * пока брейкпоинт активен, панель явно говорит, что изменения уйдут в
+ * переопределения, и перечисляет уже переопределённые свойства. Каждый чип
+ * снимает своё переопределение, возвращая значение к более широкой ширине.
+ */
+function BreakpointBanner({ node }: { node: SceneNode }) {
+  const doc = useStore((s) => s.doc);
+  const activeBreakpoint = useUi((s) => s.activeBreakpoint);
+  const { updateLayout, updateStyle, setNodeHiddenAt, clearOverrides } = useStore.getState();
+
+  const bp = doc.breakpoints.find((b) => b.id === activeBreakpoint);
+  if (!bp) return null;
+
+  const ov = node.responsive?.[bp.id];
+  const layoutKeys = Object.keys(ov?.layout ?? {});
+  const styleKeys = Object.keys(ov?.style ?? {});
+  const total = layoutKeys.length + styleKeys.length + (ov?.hidden ? 1 : 0);
+
+  return (
+    <div className="insp-bp">
+      <div className="insp-bp-head">
+        <span className="insp-bp-name">{bp.name} ≤ {bp.maxWidth}px</span>
+        {total > 0 && (
+          <button className="linklike" onClick={() => clearOverrides(node.id, bp.id)}>
+            сбросить всё
+          </button>
+        )}
+      </div>
+      <p className="insp-bp-hint">
+        Правки уходят в переопределения этого брейкпоинта, база не меняется.
+      </p>
+      <label className="insp-bp-hide">
+        <input
+          type="checkbox"
+          checked={ov?.hidden ?? false}
+          onChange={(e) => setNodeHiddenAt(node.id, bp.id, e.target.checked)}
+        />{" "}
+        Скрыть на этой ширине
+      </label>
+      {total > 0 && (
+        <div className="space-chips insp-bp-chips">
+          {layoutKeys.map((k) => (
+            <button
+              key={`l-${k}`}
+              className="space-chip on"
+              title="Снять переопределение этого свойства"
+              onClick={() => updateLayout(node.id, { [k]: undefined })}
+            >
+              {RESPONSIVE_LABELS[k] ?? k} ✕
+            </button>
+          ))}
+          {styleKeys.map((k) => (
+            <button
+              key={`s-${k}`}
+              className="space-chip on"
+              title="Снять переопределение этого свойства"
+              onClick={() => updateStyle(node.id, { [k]: undefined })}
+            >
+              {RESPONSIVE_LABELS[k] ?? k} ✕
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Inspector() {
   const selection = useStore((s) => s.selection);
   const doc = useStore((s) => s.doc);
@@ -232,6 +316,7 @@ export function Inspector() {
 
   const node: SceneNode | undefined = selection.length === 1 ? doc.nodes[selection[0]] : undefined;
   const theme = resolveTheme(doc.theme);
+  const activeBreakpoint = useUi((s) => s.activeBreakpoint);
 
   if (!node) {
     return (
@@ -249,14 +334,20 @@ export function Inspector() {
 
   const isBox = node.type === "frame" || node.type === "container";
   const hasText = node.type === "text" || node.type === "button" || node.type === "input";
-  const L = node.layout;
-  const S = node.style;
+  /* На активном брейкпоинте контролы показывают РАЗРЕШЁННЫЕ значения (база +
+     каскад переопределений), а не базовые: иначе пользователь видел бы одно,
+     а страница на этой ширине выглядела бы иначе. Запись при этом уходит в
+     переопределения — за это отвечает стор. */
+  const resolved = resolveNodeAt(node, doc.breakpoints, activeBreakpoint);
+  const L = resolved.layout;
+  const S = resolved.style;
   // пресет узла: у импортированных его нет, но структура читается
   const preset = inferLayoutPreset(L);
   const axes = resolveAxes(L);
 
   return (
     <aside className="inspector">
+      <BreakpointBanner node={node} />
       {/* --- Элемент --- */}
       <div className="insp-section">
         <div className="insp-title">

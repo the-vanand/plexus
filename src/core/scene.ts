@@ -6,7 +6,7 @@ import { uid } from "./ids";
 import { deg2rad, rotateAround } from "./geometry";
 import { DEFAULT_THEME, type ThemeSpec } from "./themes";
 import type {
-  LayoutProps, NodeType, PaddingValue, Rect, SceneDocument, SceneNode, Sides, StyleProps,
+  Breakpoint, LayoutProps, NodeType, PaddingValue, Rect, SceneDocument, SceneNode, Sides, StyleProps,
 } from "./types";
 
 /* ------------------------------------------------------------------ */
@@ -32,6 +32,236 @@ export const padY = (p: PaddingValue | undefined): number => {
 /** Сворачивает стороны обратно в число, если они равны (компактнее в json). */
 export const packPadding = (s: Sides): PaddingValue =>
   s.t === s.r && s.r === s.b && s.b === s.l ? s.t : s;
+
+/* ------------------------------------------------------------------ */
+/* Брейкпоинты: каскад и разрешение значений                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Брейкпоинты по умолчанию. Планшет и телефон закрывают 90% случаев;
+ * промежуточные ширины намеренно не заводим — каждый лишний брейкпоинт
+ * пользователю приходится обслуживать руками.
+ */
+export const DEFAULT_BREAKPOINTS: Breakpoint[] = [
+  { id: "bp-tablet", name: "Планшет", maxWidth: 1024 },
+  { id: "bp-phone", name: "Телефон", maxWidth: 640 },
+];
+
+/** Инвариант документа: от широкого к узкому. */
+export const sortBreakpoints = (list: Breakpoint[]): Breakpoint[] =>
+  [...list].sort((a, b) => b.maxWidth - a.maxWidth);
+
+/**
+ * КАСКАД БРЕЙКПОИНТОВ — неочевидное, но важное решение.
+ *
+ * Переопределения НЕ независимы: на 640 действует всё, что задано на 1024,
+ * если на 640 это не переопределено явно. То есть значение собирается
+ * слоями: база → 1024 → 640.
+ *
+ * Почему так, а не «каждый брейкпоинт от базы»:
+ *  1. Это ровно поведение CSS. Оба блока `@media (max-width: 1024px)` и
+ *     `@media (max-width: 640px)` действуют при ширине 600px, и побеждает
+ *     тот, что идёт в файле позже (узкий). Если бы модель каскад не
+ *     повторяла, холст показывал бы одно, а экспортированный сайт — другое.
+ *  2. Иначе «поставить в один столбец на планшете и уже» требовало бы
+ *     повторить то же самое на телефоне, и любая правка планшета молча
+ *     расходилась бы с телефоном.
+ *
+ * Возвращает срез списка до указанного брейкпоинта включительно.
+ */
+const cascadeChain = (breakpoints: Breakpoint[], breakpointId: string | null): Breakpoint[] => {
+  if (!breakpointId) return [];
+  const index = breakpoints.findIndex((b) => b.id === breakpointId);
+  return index < 0 ? [] : breakpoints.slice(0, index + 1);
+};
+
+/**
+ * Итоговые layout/style узла на брейкпоинте (null = базовое состояние).
+ * `hidden` истинно, если узел скрыт на ЛЮБОМ звене каскада и ниже это явно
+ * не отменено.
+ */
+export function resolveNodeAt(
+  node: SceneNode,
+  breakpoints: Breakpoint[],
+  breakpointId: string | null,
+): { layout: LayoutProps; style: StyleProps; hidden: boolean } {
+  const chain = cascadeChain(breakpoints, breakpointId);
+  if (chain.length === 0 || !node.responsive) {
+    return { layout: node.layout, style: node.style, hidden: false };
+  }
+  let layout = node.layout;
+  let style = node.style;
+  let hidden = false;
+  let touched = false;
+  for (const bp of chain) {
+    const ov = node.responsive[bp.id];
+    if (!ov) continue;
+    if (ov.layout) {
+      layout = touched ? Object.assign(layout, ov.layout) : { ...layout, ...ov.layout };
+      touched = true;
+    }
+    if (ov.style) style = { ...style, ...ov.style };
+    if (ov.hidden !== undefined) hidden = ov.hidden;
+  }
+  return { layout, style, hidden };
+}
+
+/**
+ * Какой брейкпоинт активен при заданной ширине вьюпорта.
+ *
+ * Действуют ВСЕ брейкпоинты с maxWidth >= width, а побеждает самый узкий из
+ * них (он идёт в CSS последним). Поэтому берём последний подходящий в
+ * отсортированном по убыванию списке — это и есть конец каскадной цепочки.
+ */
+export const breakpointForWidth = (breakpoints: Breakpoint[], width: number): Breakpoint | null => {
+  let match: Breakpoint | null = null;
+  for (const bp of breakpoints) if (bp.maxWidth >= width) match = bp;
+  return match;
+};
+
+/**
+ * Проекция документа на брейкпоинт: узлы с разрешёнными layout/style,
+ * скрытые — выброшены из детей родителя (и из rootFrames).
+ *
+ * Так решатель и кодоген получают ОБЫЧНЫЙ документ и не знают про
+ * адаптивность вовсе: вся логика брейкпоинтов заканчивается здесь.
+ * Возвращает исходный документ без копирования, если разрешать нечего.
+ */
+export function resolveDocAt(doc: SceneDocument, breakpointId: string | null): SceneDocument {
+  const chain = cascadeChain(doc.breakpoints, breakpointId);
+  if (chain.length === 0) return doc;
+  const ids = new Set(chain.map((b) => b.id));
+  const affected = Object.values(doc.nodes).some(
+    (n) => n.responsive && Object.keys(n.responsive).some((k) => ids.has(k)),
+  );
+  if (!affected) return doc;
+
+  const nodes: Record<string, SceneNode> = {};
+  const hiddenIds = new Set<string>();
+  for (const node of Object.values(doc.nodes)) {
+    const r = resolveNodeAt(node, doc.breakpoints, breakpointId);
+    if (r.hidden) hiddenIds.add(node.id);
+    nodes[node.id] = r.layout === node.layout && r.style === node.style
+      ? node
+      : { ...node, layout: r.layout, style: r.style };
+  }
+  if (hiddenIds.size > 0) {
+    for (const node of Object.values(nodes)) {
+      if (node.children.some((c) => hiddenIds.has(c))) {
+        nodes[node.id] = { ...node, children: node.children.filter((c) => !hiddenIds.has(c)) };
+      }
+    }
+  }
+  return {
+    ...doc,
+    nodes,
+    rootFrames: hiddenIds.size > 0 ? doc.rootFrames.filter((f) => !hiddenIds.has(f)) : doc.rootFrames,
+  };
+}
+
+/**
+ * Что вообще разрешено переопределять. Перечни дублируют типы
+ * ResponsiveLayout/ResponsiveStyle, потому что типы существуют только на
+ * этапе компиляции, а фильтровать патч из инспектора нужно в рантайме.
+ */
+export const RESPONSIVE_LAYOUT_KEYS: ReadonlySet<string> = new Set<keyof LayoutProps>([
+  "width", "height", "maxWidth", "centered",
+  "direction", "gap", "rowGap", "padding", "margin",
+  "align", "justify",
+  "preset", "columns", "autoGrid", "sidebar", "gridTracks", "gridSpan",
+  "wrap", "container",
+]);
+
+export const RESPONSIVE_STYLE_KEYS: ReadonlySet<string> = new Set<keyof StyleProps>([
+  "fontSize", "fontWeight", "lineHeight", "letterSpacing", "textAlign", "uppercase",
+]);
+
+/**
+ * Раскладывает патч из инспектора на две части: что уходит в переопределение
+ * брейкпоинта и что обязано лечь в базу.
+ *
+ * Неадаптивные свойства (координаты, поворот) пишутся в базу ДАЖЕ при
+ * активном брейкпоинте — иначе перетаскивание узла в режиме «Телефон»
+ * молча не давало бы результата.
+ */
+export function splitResponsivePatch<T extends object>(
+  patch: T,
+  allowed: ReadonlySet<string>,
+): { override: Partial<T>; base: Partial<T> } {
+  const override: Record<string, unknown> = {};
+  const base: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(patch)) {
+    if (allowed.has(k)) override[k] = v;
+    else base[k] = v;
+  }
+  return { override: override as Partial<T>, base: base as Partial<T> };
+}
+
+/**
+ * Предыдущее (более широкое) звено каскада: null — база.
+ * Нужно там, где переопределение считается ДИФФОМ: сравнивать надо с тем, что
+ * уже действует на этой ширине, а не с базой (см. пресеты раскладки в сторе).
+ */
+export const previousBreakpointId = (breakpoints: Breakpoint[], id: string): string | null => {
+  const i = breakpoints.findIndex((b) => b.id === id);
+  return i > 0 ? breakpoints[i - 1].id : null;
+};
+
+/** Есть ли у узла переопределение свойства на конкретном брейкпоинте. */
+export const hasOverride = (
+  node: SceneNode,
+  breakpointId: string | null,
+  kind: "layout" | "style",
+  key: string,
+): boolean => {
+  if (!breakpointId || !node.responsive) return false;
+  const group = node.responsive[breakpointId]?.[kind] as Record<string, unknown> | undefined;
+  return group !== undefined && key in group;
+};
+
+/** Сколько переопределений у узла на брейкпоинте (для бейджа в инспекторе). */
+export const overrideCount = (node: SceneNode, breakpointId: string | null): number => {
+  if (!breakpointId || !node.responsive) return 0;
+  const ov = node.responsive[breakpointId];
+  if (!ov) return 0;
+  return (
+    Object.keys(ov.layout ?? {}).length +
+    Object.keys(ov.style ?? {}).length +
+    (ov.hidden !== undefined ? 1 : 0)
+  );
+};
+
+/**
+ * Записывает переопределение в узел (мутирует — вызывается на драфте стора).
+ * Пустые группы и пустой объект переопределения удаляются: документ не
+ * должен копить мусор вида `responsive: { "bp-phone": {} }`.
+ */
+export function setOverride(
+  node: SceneNode,
+  breakpointId: string,
+  kind: "layout" | "style",
+  patch: Record<string, unknown>,
+): void {
+  if (Object.keys(patch).length === 0) return;
+  const all = (node.responsive ??= {});
+  const ov = (all[breakpointId] ??= {});
+  const group = { ...(ov[kind] as Record<string, unknown> | undefined) };
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) delete group[k];
+    else group[k] = v;
+  }
+  if (Object.keys(group).length === 0) delete ov[kind];
+  else (ov as Record<string, unknown>)[kind] = group;
+  pruneOverrides(node, breakpointId);
+}
+
+/** Убирает опустевшие переопределения. */
+export function pruneOverrides(node: SceneNode, breakpointId: string): void {
+  const ov = node.responsive?.[breakpointId];
+  if (!ov) return;
+  if (!ov.layout && !ov.style && ov.hidden === undefined) delete node.responsive![breakpointId];
+  if (node.responsive && Object.keys(node.responsive).length === 0) delete node.responsive;
+}
 
 /* ------------------------------------------------------------------ */
 /* Дефолты                                                             */
@@ -383,6 +613,12 @@ export function normalizeDoc(doc: SceneDocument): SceneDocument {
   if (!Array.isArray(doc.dbRelations)) doc.dbRelations = [];
   if (!doc.dbProvider) doc.dbProvider = "sqlite";
   if (!doc.siteTarget) doc.siteTarget = "static";
+  /* Сохранения до адаптивности брейкпоинтов не знали. Дозаполнять их
+     дефолтами НЕЛЬЗЯ: пустой список — единственное состояние, при котором
+     кодоген выдаёт CSS байт-в-байт как раньше, а старый проект не должен
+     внезапно обрасти медиазапросами. */
+  if (!Array.isArray(doc.breakpoints)) doc.breakpoints = [];
+  else doc.breakpoints = sortBreakpoints(doc.breakpoints.filter((b) => b && b.id && Number(b.maxWidth) > 0));
   doc.dbRelations = doc.dbRelations.filter(
     (r) => doc.dbTables[r.fromTableId] && doc.dbTables[r.toTableId],
   );
@@ -432,6 +668,7 @@ export function createStarterDocument(options?: StarterOptions): SceneDocument {
     dbRelations: [],
     dbProvider: "sqlite",
     siteTarget: options?.siteTarget ?? "static",
+    breakpoints: DEFAULT_BREAKPOINTS.map((b) => ({ ...b })),
   };
   const add = (node: SceneNode, parent: SceneNode | null): SceneNode => {
     node.parent = parent?.id ?? null;
