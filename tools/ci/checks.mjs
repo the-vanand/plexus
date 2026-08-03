@@ -66,6 +66,7 @@ for (const [file, label] of [
   ["tools/harness/catalog.ts", "catalog"],
   ["tools/harness/templates.ts", "templates"],
   ["tools/harness/breakpoints.ts", "breakpoints"],
+  ["tools/harness/determinism.ts", "determinism"],
 ]) {
   if (!existsSync(file)) {
     console.log(`· ${label.padEnd(26)} нет в дереве, пропуск`);
