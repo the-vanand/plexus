@@ -250,24 +250,46 @@ Each item below was traced to a root cause in the engine, not patched at the sur
 
 - **Node.js 20+** — https://nodejs.org
 - **Rust (stable)** — https://rustup.rs
-- Системные зависимости Tauri 2 (Linux): https://tauri.app/start/prerequisites/
+- **Windows:** Visual Studio Build Tools с нагрузкой «Разработка на C++»
+  (без линкера MSVC Rust на Windows не собирается) и WebView2 Runtime —
+  на Windows 11 он уже есть
+- **Linux:** системные зависимости Tauri 2 — https://tauri.app/start/prerequisites/
 
 ```bash
-npm install          # 1. зависимости фронтенда
-npm run tauri dev    # 2. запуск десктоп-приложения (первый запуск компилирует Rust, это несколько минут)
+git clone https://github.com/the-vanand/plexus.git
+cd plexus
+npm install          # зависимости фронтенда + иконки приложения
+npm run tauri dev    # десктоп-приложение; первая сборка Rust — несколько минут
 ```
 
-Только веб-превью без Rust (терминал и файловая система будут в режиме заглушек):
+Три команды, без ручных шагов. Иконки приложения **генерируются** из
+`design/icon.svg` на `postinstall`, а не хранятся в репозитории: источник
+один, рассинхронизировать его с бинарными копиями невозможно, и история не
+пухнет от PNG и ICNS. После правки SVG:
+
+```bash
+npm run icons -- --force
+```
+
+Только веб-превью, без Rust (файловые диалоги и снимок страницы через скрытое
+окно будут недоступны — код это знает и деградирует явно):
 
 ```bash
 npm run dev          # http://localhost:5173
 ```
 
-Иконки приложения (однократно, после любой правки design/icon.svg → design/app-icon.png):
+Проверить, что окружение исправно, до всякого запуска:
 
 ```bash
-npm run tauri icon design/app-icon.png
+npm run check        # восемь проверок: типы, сборка, пять стендов
 ```
+
+**Чего в репозитории намеренно нет.** Четырёх фотографий в
+`fixtures/cospex-lite/assets/` — от стендов они не требуются (проверки считают
+теги `<img>`, а не открывают файлы), нужны только чтобы фикстура отображалась
+с картинками. Полноразмерные материалы заказчика в `fixtures/cospex-site/`
+исключены через `.gitignore` осознанно: 2.5 МБ бинарных данных, которые
+воспроизводятся облегчённой копией.
 
 ## Стенды проверки
 
