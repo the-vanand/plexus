@@ -28,17 +28,69 @@
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const baseline = JSON.parse(readFileSync("tools/ci/baseline.json", "utf8"));
 const tol = baseline.tolerance ?? {};
 const results = [];
 let failed = 0;
 
+/**
+ * Путь к исполняемому файлу пакета, объявленному в его package.json.
+ *
+ * Раньше раннер звал `npx`, и на Windows это ломало ВСЁ разом: там `npx` —
+ * это `npx.cmd`, а Node начиная с 18.20/20.12 отказывается запускать `.cmd`
+ * без оболочки (защита от CVE-2024-27980) и падает с EINVAL ещё ДО запуска
+ * команды. Все восемь проверок сваливались одновременно и молча.
+ *
+ * Запуск через сам Node (`process.execPath`) не зависит ни от оболочки, ни
+ * от платформы, ни от содержимого PATH.
+ */
+function binOf(pkg, name = pkg) {
+  const dir = join(process.cwd(), "node_modules", pkg);
+  const pj = join(dir, "package.json");
+  if (!existsSync(pj)) throw new Error(`не найден пакет ${pkg} — выполните npm install`);
+  const bin = JSON.parse(readFileSync(pj, "utf8")).bin;
+  const rel = typeof bin === "string" ? bin : bin?.[name];
+  if (!rel) throw new Error(`пакет ${pkg} не объявляет исполняемый файл ${name}`);
+  return join(dir, rel);
+}
+
+const NODE = process.execPath;
+
+/**
+ * Запуск команды. Возвращает не только вывод, но и причину сбоя ЗАПУСКА.
+ *
+ * `e.stdout`/`e.stderr` равны undefined, когда процесс не удалось запустить
+ * (ENOENT, EINVAL), — в отличие от ненулевого кода возврата, где вывод есть.
+ * Прежняя версия склеивала их через `?? ""` и печатала пустое место вместо
+ * причины: проверка падала, не сообщая ничего. Молчащий гейт немногим лучше
+ * отсутствующего, поэтому ошибка запуска теперь видна в таблице.
+ */
 const run = (cmd, args) => {
   try {
     return { ok: true, out: execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 }) };
   } catch (e) {
-    return { ok: false, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    const out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
+    const launchError = out.trim() ? "" : `не удалось запустить: ${[e.code, e.message].filter(Boolean).join(" ")}`;
+    return { ok: false, out, launchError };
+  }
+};
+
+/** Короткая причина для таблицы: вывод команды либо ошибка запуска. */
+const reason = (r, lines = 3) =>
+  r.launchError || r.out.split("\n").filter(Boolean).slice(0, lines).join(" | ") || "код возврата";
+
+/**
+ * Запуск инструмента из node_modules. Отсутствие пакета — это тоже
+ * результат проверки, а не повод уронить весь раннер стеком: иначе одна
+ * непоставленная зависимость скрывает состояние всех остальных проверок.
+ */
+const runBin = (pkg, name, args) => {
+  try {
+    return run(NODE, [binOf(pkg, name), ...args]);
+  } catch (e) {
+    return { ok: false, out: "", launchError: String(e.message ?? e) };
   }
 };
 
@@ -52,13 +104,13 @@ console.log("\n════ ПРОВЕРКИ СБОРКИ ════\n");
 
 /* ---------- типы и сборка ---------- */
 {
-  const r = run("npx", ["tsc", "--noEmit"]);
-  record("tsc --noEmit", r.ok, r.ok ? "без ошибок" : r.out.split("\n").filter(Boolean).slice(0, 3).join(" | "));
+  const r = runBin("typescript", "tsc", ["--noEmit"]);
+  record("tsc --noEmit", r.ok, r.ok ? "без ошибок" : reason(r));
 }
 {
-  const r = run("npx", ["vite", "build"]);
+  const r = runBin("vite", "vite", ["build"]);
   const built = /built in/.test(r.out);
-  record("vite build", r.ok && built, built ? "собралось" : r.out.split("\n").filter(Boolean).slice(-2).join(" | "));
+  record("vite build", r.ok && built, built ? "собралось" : reason(r, 2));
 }
 
 /* ---------- самосудящие стенды ---------- */
@@ -72,8 +124,8 @@ for (const [file, label] of [
     console.log(`· ${label.padEnd(26)} нет в дереве, пропуск`);
     continue;
   }
-  const r = run("npx", ["tsx", file]);
-  const verdict = (r.out.match(/ИТОГ:.*/) ?? ["код возврата"])[0].trim();
+  const r = runBin("tsx", "tsx", [file]);
+  const verdict = (r.out.match(/ИТОГ:.*/) ?? [reason(r, 2)])[0].trim();
   record(label, r.ok, verdict);
 }
 
@@ -88,9 +140,9 @@ for (const [label, file, args] of metricRuns) {
     console.log(`· ${label.padEnd(26)} нет в дереве, пропуск`);
     continue;
   }
-  const r = run("npx", ["tsx", file, ...args]);
+  const r = runBin("tsx", "tsx", [file, ...args]);
   if (!r.ok) {
-    record(label, false, "стенд упал");
+    record(label, false, `стенд упал: ${reason(r, 2)}`);
     continue;
   }
   const line = r.out.split("\n").reverse().find((l) => l.startsWith("JSON "));
