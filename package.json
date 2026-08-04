@@ -9,6 +9,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "icons": "node scripts/ensure-icons.mjs",
+    "postinstall": "node scripts/ensure-icons.mjs",
     "check": "node tools/ci/checks.mjs",
     "harness": "tsx tools/harness/roundtrip.ts"
   },
