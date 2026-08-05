@@ -106,7 +106,14 @@ export const SNAP_PROPS = [
  * он попадает в чужую страницу, где нет ни сборки, ни полифилов.
  */
 export function collectorScript(
-  opts: { maxNodes?: number; settleMs?: number; quietMs?: number; ceilingMs?: number } = {},
+  opts: {
+    maxNodes?: number;
+    settleMs?: number;
+    quietMs?: number;
+    ceilingMs?: number;
+    /** Прокручивать страницу перед снимком, чтобы подтянуть ленивое содержимое. */
+    scrollMs?: number;
+  } = {},
 ): string {
   const maxNodes = opts.maxNodes ?? 4000;
   /** Минимум ожидания: раньше этого срока не снимаем даже «тихую» страницу. */
@@ -115,6 +122,16 @@ export function collectorScript(
   const quietMs = opts.quietMs ?? 900;
   /** Жёсткий потолок: бесконечно тикающую страницу когда-то надо снять. */
   const ceilingMs = opts.ceilingMs ?? 20000;
+  /**
+   * Потолок прохода прокруткой. Ноль отключает проход.
+   *
+   * Ленивое содержимое привязано к прокрутке: картинки с `loading="lazy"`,
+   * блоки, открываемые по `IntersectionObserver`, бесконечные ленты. Никакое
+   * ожидание их не покажет — страница обязана «увидеть», что до них дошли.
+   * Поэтому перед снимком делаем то же, что сделал бы человек: проходим
+   * страницу до низа и возвращаемся наверх.
+   */
+  const scrollMs = opts.scrollMs ?? 6000;
   return `
 (function () {
   var PROPS = ${JSON.stringify(SNAP_PROPS)};
@@ -122,6 +139,7 @@ export function collectorScript(
   var SETTLE = ${settleMs};
   var QUIET = ${quietMs};
   var CEILING = ${ceilingMs};
+  var SCROLL_MS = ${scrollMs};
   /* Метка места ребёнка в собственном тексте и перевод строки. Оба заданы
      кодами, а не литералами: текст сборщика едет сюда шаблонной строкой,
      где обратный слэш пришлось бы удваивать, и правка рядом молча ломала
@@ -412,12 +430,80 @@ export function collectorScript(
     });
   }
 
+  /**
+   * ПРОХОД ПРОКРУТКОЙ. Доводит до конца страницы шагами по экрану, ждёт на
+   * каждом шаге, затем возвращается наверх. Именно возврат важен: снимок
+   * должен описывать страницу в её естественном состоянии, у начала.
+   *
+   * Бесконечная лента растёт от прокрутки бесконечно, поэтому проход
+   * ограничен и временем, и числом шагов. Если высота перестала расти —
+   * выходим раньше, не тратя потолок.
+   */
+  function scrollPass(done) {
+    if (!SCROLL_MS) { done(0); return; }
+    var startedAt = Date.now();
+    var stepPx = Math.max(240, Math.round(window.innerHeight * 0.8));
+    var y = 0;
+    var steps = 0;
+
+    function docHeight() {
+      return Math.max(
+        document.documentElement.scrollHeight,
+        document.body ? document.body.scrollHeight : 0
+      );
+    }
+
+    function back() {
+      window.scrollTo(0, 0);
+      // страница успевает вернуть прилипшие элементы на свои места
+      setTimeout(function () { done(steps); }, 350);
+    }
+
+    function next() {
+      var height = docHeight();
+      /* Ограничители — только время и число шагов. Признак «высота не
+         выросла» я сначала считал концом страницы, и проход обрывался на
+         третьем шаге: у обычной страницы высота и НЕ должна расти, растёт она
+         лишь у бесконечной ленты. От ленты защищают ровно потолки. */
+      if (Date.now() - startedAt > SCROLL_MS || steps > 60) { back(); return; }
+      if (y >= height - window.innerHeight) { back(); return; }
+      y += stepPx;
+      steps += 1;
+      try { window.scrollTo(0, y); } catch (e) { back(); return; }
+      setTimeout(next, 220);
+    }
+    next();
+  }
+
+  /** Ждём, пока подтянутся картинки, которые проход сделал видимыми. */
+  function imagesReady(done) {
+    var deadline = Date.now() + 4000;
+    function step() {
+      var imgs = document.images || [];
+      var pending = 0;
+      for (var i = 0; i < imgs.length; i++) {
+        if (!imgs[i].complete && imgs[i].currentSrc) pending += 1;
+      }
+      if (pending === 0 || Date.now() > deadline) { done(); return; }
+      setTimeout(step, 150);
+    }
+    step();
+  }
+
   return new Promise(function (resolve) {
     waitReady(function (idle, reason) {
-      snap(function (result) {
-        result.settleMs = idle;
-        result.settleReason = reason;
-        resolve(result);
+      scrollPass(function (steps) {
+        imagesReady(function () {
+          // после прохода страница снова могла начать меняться
+          waitReady(function (extra, reason2) {
+            snap(function (result) {
+              result.settleMs = idle + extra;
+              result.settleReason = reason + (steps ? ', прокрутка ' + steps + ' шагов' : '')
+                + (reason2 !== reason ? ', затем ' + reason2 : '');
+              resolve(result);
+            });
+          });
+        });
       });
     });
   });
