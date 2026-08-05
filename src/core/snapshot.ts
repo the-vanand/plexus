@@ -72,6 +72,8 @@ export interface PageSnapshot {
   skipped: number;
   /** Сколько мс ждали сборки страницы. */
   settleMs: number;
+  /** Почему перестали ждать: «тишина» или «потолок». Старые снимки без него. */
+  settleReason?: string;
 }
 
 /** Свойства, которые снимаем. Список закрытый: снимок не должен раздуваться. */
@@ -103,14 +105,23 @@ export const SNAP_PROPS = [
  * Скрипт написан на ES5-подобном подмножестве без внешних зависимостей —
  * он попадает в чужую страницу, где нет ни сборки, ни полифилов.
  */
-export function collectorScript(opts: { maxNodes?: number; settleMs?: number } = {}): string {
+export function collectorScript(
+  opts: { maxNodes?: number; settleMs?: number; quietMs?: number; ceilingMs?: number } = {},
+): string {
   const maxNodes = opts.maxNodes ?? 4000;
+  /** Минимум ожидания: раньше этого срока не снимаем даже «тихую» страницу. */
   const settleMs = opts.settleMs ?? 1200;
+  /** Сколько тишины в DOM считать признаком, что страница собралась. */
+  const quietMs = opts.quietMs ?? 900;
+  /** Жёсткий потолок: бесконечно тикающую страницу когда-то надо снять. */
+  const ceilingMs = opts.ceilingMs ?? 20000;
   return `
 (function () {
   var PROPS = ${JSON.stringify(SNAP_PROPS)};
   var MAX_NODES = ${maxNodes};
   var SETTLE = ${settleMs};
+  var QUIET = ${quietMs};
+  var CEILING = ${ceilingMs};
   /* Метка места ребёнка в собственном тексте и перевод строки. Оба заданы
      кодами, а не литералами: текст сборщика едет сюда шаблонной строкой,
      где обратный слэш пришлось бы удваивать, и правка рядом молча ломала
@@ -144,17 +155,58 @@ export function collectorScript(opts: { maxNodes?: number; settleMs?: number } =
   };
 
   /** Ждём, пока страница действительно собралась, а не просто загрузилась. */
+  /**
+   * ГОТОВНОСТЬ СТРАНИЦЫ ОПРЕДЕЛЯЕТСЯ ТИШИНОЙ В DOM, А НЕ ПАУЗОЙ.
+   *
+   * Прежняя версия ждала событие load плюс фиксированные полторы секунды.
+   * Для страницы, которую собирает JS, этого мало: снимок успевал уйти до
+   * гидратации. Измерено на живых сайтах — страница просмотра YouTube
+   * давала 149 элементов вместо тысяч, Airbnb 1371 вместо 2126.
+   *
+   * Разница со стендом была именно здесь: там до запуска сборщика браузер
+   * ждёт затишья сети средствами Playwright, а в приложении такого ожидания
+   * нет и быть не может — сборщик исполняется внутри чужой страницы и о сети
+   * ничего не знает. Зато он видит DOM: пока разметка меняется, страница
+   * ещё собирается.
+   *
+   * Условия снятия: прошёл минимум SETTLE, документ дошёл до complete,
+   * шрифты применены И в DOM тишина QUIET миллисекунд. Потолок CEILING
+   * снимает страницу, которая тикает вечно (карусели, таймеры, реклама);
+   * причина попадает в снимок, чтобы её было видно в логе.
+   */
   function waitReady(done) {
     var started = Date.now();
-    function step() {
-      var idle = Date.now() - started;
-      var fontsOk = !document.fonts || document.fonts.status === 'loaded';
-      // ждём шрифты и даём время гидратации; жёсткий потолок — 12 секунд
-      if ((fontsOk && idle > SETTLE) || idle > 12000) { done(idle); return; }
-      setTimeout(step, 150);
+    var lastChange = started;
+    var observer = null;
+    try {
+      observer = new MutationObserver(function () { lastChange = Date.now(); });
+      observer.observe(document.documentElement, {
+        childList: true, subtree: true, attributes: true, characterData: true
+      });
+    } catch (e) { /* нет MutationObserver — останется ожидание по времени */ }
+
+    function finish(reason) {
+      if (observer) { try { observer.disconnect(); } catch (e) {} }
+      done(Date.now() - started, reason);
     }
-    if (document.readyState === 'complete') step();
-    else window.addEventListener('load', step, { once: true });
+
+    function step() {
+      var now = Date.now();
+      var elapsed = now - started;
+      var quiet = now - lastChange;
+      if (elapsed >= CEILING) { finish('потолок'); return; }
+      // ближе к потолку перестаём требовать шрифты и complete: страница
+      // может держать открытым соединение и не дойти до них никогда
+      var lenient = elapsed > CEILING / 2;
+      var loaded = document.readyState === 'complete' || lenient;
+      var fontsOk = !document.fonts || document.fonts.status === 'loaded' || lenient;
+      if (elapsed >= SETTLE && loaded && fontsOk && (quiet >= QUIET || !observer)) {
+        finish('тишина');
+        return;
+      }
+      setTimeout(step, 120);
+    }
+    step();
   }
 
   /**
@@ -355,14 +407,16 @@ export function collectorScript(opts: { maxNodes?: number; settleMs?: number } =
       fonts: famList,
       nodes: nodes,
       skipped: skipped,
-      settleMs: 0
+      settleMs: 0,
+      settleReason: ''
     });
   }
 
   return new Promise(function (resolve) {
-    waitReady(function (idle) {
+    waitReady(function (idle, reason) {
       snap(function (result) {
         result.settleMs = idle;
+        result.settleReason = reason;
         resolve(result);
       });
     });
