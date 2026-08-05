@@ -3416,7 +3416,7 @@ function importSnapshotToDocInner(
        единственный ребёнок `section.filter_column` вставал под сетку
        карточек — 6132px вместо 3626. Обёртку, ставшую рядом (`floatRow`),
        разворачивать можно: там ребёнок и так окажется в потоке. */
-    if (!process.env.NOPT && isFloat(n) && !floatRow.has(n)) return false;
+    if (isFloat(n) && !floatRow.has(n)) return false;
     if (n.i) return false; // якорь нужен для ссылок
     return n.t === "div" || n.t === "span";
   }
