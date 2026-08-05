@@ -1322,7 +1322,11 @@ export const useStore = create<PlexusState>()((set, get) => {
         log("info", `Открываю ${pageUrl} в браузере и жду сборки страницы…`);
         const snapshot = (await host.captureSnapshot({
           url: pageUrl,
-          collector: collectorScript({ settleMs: 1500 }),
+          /* В приложении сборщик — единственный, кто знает о готовности
+             страницы: в отличие от стенда, здесь никто заранее не ждёт
+             затишья сети средствами браузера. Поэтому порог ожидания выше:
+             полторы секунды не хватало, снимок уходил до гидратации. */
+          collector: collectorScript({ settleMs: 2500, quietMs: 1200, ceilingMs: 25000 }),
           width,
           height: Math.round(width * 0.625),
         })) as PageSnapshot;
@@ -1334,7 +1338,8 @@ export const useStore = create<PlexusState>()((set, get) => {
         log(
           "ok",
           `Снимок готов: элементов ${snapshot.nodes.length}, скрытых пропущено ${snapshot.skipped}, ` +
-            `ждали ${snapshot.settleMs} мс`,
+            `ждали ${snapshot.settleMs} мс` +
+            (snapshot.settleReason ? ` (${snapshot.settleReason})` : ""),
         );
 
         const doc = draft();
