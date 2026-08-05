@@ -28,6 +28,7 @@ fn main() {
             "kill_command",
             "capture_snapshot",
             "snapshot_result",
+            "snapshot_stage",
             "snapshot_failed",
         ])),
     )

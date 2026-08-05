@@ -174,7 +174,7 @@ export async function captureSnapshot(opts: {
 }): Promise<unknown> {
   const width = opts.width ?? 1440;
   const height = opts.height ?? 900;
-  const timeoutMs = opts.timeoutMs ?? 20000;
+  const timeoutMs = opts.timeoutMs ?? 45000;
 
   if (isTauri()) {
     const raw = await invoke<string>("capture_snapshot", {
