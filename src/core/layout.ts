@@ -17,7 +17,7 @@
  *     существовала в модели, поэтому строки текста шли во всю ширину экрана
  *     и перенос не совпадал с оригиналом.
  */
-import type { GridTrack, MeasureFn, Rect, SceneDocument, SceneNode, SizeMode } from "./types";
+import type { GridTrack, MeasureFn, Rect, SceneDocument, SceneNode, SizeMode, Sides } from "./types";
 import { breakpointForWidth, isContainerLike, padBox, resolveDocAt } from "./scene";
 import { resolveTheme } from "./themes";
 
@@ -85,7 +85,16 @@ export function computeLayout(
   });
 
   const wrapHeight = (node: SceneNode, maxW: number): number =>
-    measure(node.text ?? "", node.style.fontSize, node.style.fontWeight, fontFor(node), Math.max(24, maxW), textExtra(node)).h;
+    measure(
+      node.text ?? "",
+      node.style.fontSize,
+      node.style.fontWeight,
+      fontFor(node),
+      /* `noWrap` — это `white-space: nowrap`: переноса нет, и ширина
+         обёртки на высоту не влияет вовсе (см. LayoutProps.noWrap). */
+      node.layout.noWrap ? undefined : Math.max(24, maxW),
+      textExtra(node),
+    ).h;
 
   const textNaturalW = (node: SceneNode): number =>
     measure(node.text ?? "", node.style.fontSize, node.style.fontWeight, fontFor(node), undefined, textExtra(node)).w + 2;
@@ -294,7 +303,8 @@ export function computeLayout(
       // и текст обязан переноситься по ВНУТРЕННЕЙ ширине, а не по внешней
       const lp = padBox(node.layout.padding);
       const innerW = Math.max(4, w - lp.l - lp.r);
-      const h = forcedH ?? leafH(node, innerW) + lp.t + lp.b;
+      let h = forcedH ?? leafH(node, innerW) + lp.t + lp.b;
+      if (node.layout.maxHeight !== undefined) h = Math.min(h, node.layout.maxHeight);
       rects.set(node.id, { x, y, w, h });
       return h;
     }
@@ -329,9 +339,16 @@ export function computeLayout(
       let cy = innerY;
       flow.forEach((c, i) => {
         const m = marginOf(c);
-        // ширина ребёнка НИКОГДА не больше доступной — элемент не вылезет за рамку
+        /* Ширина ребёнка не больше доступной — элемент не вылезает за рамку.
+           ИСКЛЮЧЕНИЕ — коробка с прокруткой: у неё содержимое ЗА краем по
+           определению, и обрезает его сама коробка. Свёрнутая панель
+           аккордеона supabase.com ровно такая: 76px при содержимом 560px и
+           `overflow: hidden`. Зажимая содержимое в 76px, решатель заставлял
+           абзац переноситься 33 раза вместо 4 — узел вырастал с 121px до
+           999, и таких панелей на лендинге четыре. */
         const avail = Math.max(4, innerW - m.l - m.r);
-        const cw = Math.min(resolvedW(c, avail), avail);
+        const wide = resolvedW(c, avail);
+        const cw = node.layout.scrollX ? wide : Math.min(wide, avail);
         let cx = innerX + m.l;
         // margin-inline:auto — колонка страницы по центру
         if (c.layout.centered) cx = innerX + (innerW - cw) / 2;
@@ -366,20 +383,37 @@ export function computeLayout(
          Ключевая гарантия: строка НИКОГДА не шире родителя. Фикс-ширины
          ограничены innerW, а если сумма всё равно переполняет — равномерно
          ужимаем все колонки. */
+      /* ВНЕШНИЙ ОТСТУП В РЯДУ ЛЕЖИТ СНАРУЖИ КОРОБКИ, А НЕ ВНУТРИ НЕЁ.
+         Раньше `widths[i]` считалась вместе с отступами: элемент получал
+         ширину `width − margin`, а курсор двигался на ту же величину плюс
+         margin — то есть отступ съедал сам элемент и на месте соседа не
+         сказывался вовсе. Значок 16×16 с `margin-right: 8` занимал в строке
+         16px вместо 24, и каждый следующий сосед сдвигался влево на
+         накопленную сумму: на github.com имя репозитория уезжало на 8px,
+         слэш за ним на 12, метка «Public» на 25. В колонке ошибки не было —
+         там отступы считаются отдельно от ширины, — поэтому и заметить её
+         можно было только на строке.
+         Теперь отступы вычитаются из доступной ширины ОДИН раз, как в CSS,
+         и в ширину коробки не входят. */
       const gaps = gap * Math.max(0, flow.length - 1);
+      const mars = flow.map((c) => marginOf(c));
+      const marSum = mars.reduce((a, m) => a + m.l + m.r, 0);
       const isFill = flow.map((c) => c.layout.width === "fill");
       const fixed = flow.map((c, i) => (isFill[i] ? 0 : Math.min(intrinsicW(c), innerW)));
       const fixedSum = fixed.reduce((a, b) => a + b, 0);
       const fillCount = isFill.filter(Boolean).length;
-      const fillEach = fillCount > 0 ? Math.max(MIN_FILL, (innerW - fixedSum - gaps) / fillCount) : 0;
+      const fillEach =
+        fillCount > 0 ? Math.max(MIN_FILL, (innerW - fixedSum - gaps - marSum) / fillCount) : 0;
       let widths = flow.map((c, i) =>
         isFill[i] ? Math.min(fillEach, c.layout.maxWidth ?? Infinity) : fixed[i],
       );
-      let contentW = widths.reduce((a, b) => a + b, 0) + gaps;
-      if (contentW > innerW && contentW - gaps > 0) {
-        const scale = Math.max(0.05, (innerW - gaps) / (contentW - gaps));
+      let contentW = widths.reduce((a, b) => a + b, 0) + gaps + marSum;
+      /* Прокручиваемая лента переполнение НЕ сжимает: лишнее уходит под
+         горизонтальную прокрутку, как в оригинале. */
+      if (!node.layout.scrollX && contentW > innerW && contentW - gaps - marSum > 0) {
+        const scale = Math.max(0.05, (innerW - gaps - marSum) / (contentW - gaps - marSum));
         widths = widths.map((cw) => Math.max(4, cw * scale));
-        contentW = widths.reduce((a, b) => a + b, 0) + gaps;
+        contentW = widths.reduce((a, b) => a + b, 0) + gaps + marSum;
       }
 
       let cursor = innerX;
@@ -404,10 +438,10 @@ export function computeLayout(
 
       const hs: number[] = [];
       flow.forEach((c, i) => {
-        const m = marginOf(c);
+        const m = mars[i];
         cursor += m.l;
-        hs.push(place(c, cursor, innerY + m.t, Math.max(4, widths[i] - m.l - m.r)) + m.t + m.b);
-        cursor += Math.max(4, widths[i] - m.l - m.r) + m.r + gap + extraGap;
+        hs.push(place(c, cursor, innerY + m.t, Math.max(4, widths[i])) + m.t + m.b);
+        cursor += Math.max(4, widths[i]) + m.r + gap + extraGap;
       });
       contentH = hs.length > 0 ? Math.max(...hs) : 0;
       // поперечное выравнивание
@@ -422,9 +456,12 @@ export function computeLayout(
     /* Фиксированная высота — это МИНИМУМ, а не потолок: страница и секции
        никогда не обрезают содержимое. */
     const declared = forcedH ?? fixedH(node);
-    const h = declared !== null && declared !== undefined
+    let h = declared !== null && declared !== undefined
       ? Math.max(declared, contentH + pad.t + pad.b)
       : contentH + pad.t + pad.b;
+    /* А вот ПОТОЛОК высоты — настоящий потолок: это прокручиваемая коробка,
+       и лишнее содержимое в ней уходит под прокрутку, а не раздвигает её. */
+    if (node.layout.maxHeight !== undefined) h = Math.min(h, node.layout.maxHeight);
     rects.set(node.id, { x, y, w, h });
 
     /* absolute-дети: поверх родителя. Когда заданы обе стороны по оси
@@ -478,21 +515,40 @@ export function computeLayout(
     }
 
     /** Раскидываем детей по ячейкам с учётом span. */
-    type Cell = { node: SceneNode; col: number; span: number; row: number; w: number };
+    type Cell = { node: SceneNode; col: number; span: number; row: number; rows: number; w: number };
     const cells: Cell[] = [];
     let col = 0;
     let row = 0;
+    let first = true;
     for (const child of flow) {
       const rawSpan = child.layout.gridSpan;
       const span = Math.min(tracks.length, rawSpan === "full" ? tracks.length : Math.max(1, rawSpan ?? 1));
-      if (col + span > tracks.length) {
+      const rows = Math.max(1, Math.round(child.layout.gridRowSpan ?? 1));
+      /* ЯВНОЕ МЕСТО. Раскладка «подряд» верна только для сетки без указанных
+         мест; в настоящей вёрстке место задают именованные линии,
+         `grid-area` и `order`, и тогда порядок детей ничего не говорит ни о
+         колонке, ни о ряде. */
+      const wantCol = child.layout.gridColumn;
+      const wantRow = child.layout.gridRow;
+      if (wantRow !== undefined && wantRow >= 1) {
+        row = Math.round(wantRow) - 1;
+        col =
+          wantCol !== undefined && wantCol >= 1
+            ? Math.max(0, Math.min(Math.round(wantCol) - 1, tracks.length - span))
+            : 0;
+      } else if (wantCol !== undefined && wantCol >= 1 && wantCol <= tracks.length) {
+        const start = Math.max(0, Math.min(wantCol - 1, tracks.length - span));
+        if (!first && start < col) row += 1;
+        col = start;
+      } else if (col + span > tracks.length) {
         col = 0;
         row += 1;
       }
+      first = false;
       let cw = 0;
       for (let i = col; i < col + span; i++) cw += widths[i];
       cw += colGap * (span - 1);
-      cells.push({ node: child, col, span, row, w: Math.max(4, cw) });
+      cells.push({ node: child, col, span, row, rows, w: Math.max(4, cw) });
       col += span;
       if (col >= tracks.length) {
         col = 0;
@@ -500,30 +556,59 @@ export function computeLayout(
       }
     }
 
-    // проход 1: высоты
+    /* проход 1: высоты рядов.
+       Элемент, растянутый на несколько рядов, НЕ задаёт высоту ни одному из
+       них в одиночку — иначе сайдбар во всю страницу раздувал бы тот ряд, где
+       начинается. Сначала ряды меряются по обычным элементам, затем растянутым
+       добивается недостающее в последний из занятых рядов — так же поступает
+       алгоритм распределения высоты в спецификации CSS Grid. */
     const rowH = new Map<number, number>();
+    const spanned: Array<{ cell: Cell; h: number }> = [];
     for (const c of cells) {
       const m = marginOf(c.node);
-      const h = place(c.node, innerX + offsets[c.col] + m.l, innerY + m.t, Math.max(4, c.w - m.l - m.r));
-      rowH.set(c.row, Math.max(rowH.get(c.row) ?? 0, h + m.t + m.b));
+      const h = place(c.node, innerX + offsets[c.col] + m.l, innerY + m.t, Math.max(4, c.w - m.l - m.r)) + m.t + m.b;
+      for (let r = c.row; r < c.row + c.rows; r++) if (!rowH.has(r)) rowH.set(r, 0);
+      if (c.rows <= 1) rowH.set(c.row, Math.max(rowH.get(c.row) ?? 0, h));
+      else spanned.push({ cell: c, h });
+    }
+    for (const { cell, h } of spanned) {
+      let sum = 0;
+      for (let r = cell.row; r < cell.row + cell.rows; r++) sum += rowH.get(r) ?? 0;
+      sum += rowGap * (cell.rows - 1);
+      const last = cell.row + cell.rows - 1;
+      if (h > sum) rowH.set(last, (rowH.get(last) ?? 0) + (h - sum));
     }
 
     // проход 2: реальные позиции + растяжение по высоте ряда
     const rowY = new Map<number, number>();
     let cy = innerY;
-    const rowsSorted = [...new Set(cells.map((c) => c.row))].sort((a, b) => a - b);
+    const rowsSorted = [...rowH.keys()].sort((a, b) => a - b);
     for (const r of rowsSorted) {
       rowY.set(r, cy);
       cy += (rowH.get(r) ?? 0) + rowGap;
     }
+    /** Высота ячейки: сумма занятых рядов вместе с зазорами между ними. */
+    const cellH = (c: Cell): number => {
+      let sum = 0;
+      for (let r = c.row; r < c.row + c.rows; r++) sum += rowH.get(r) ?? 0;
+      return sum + rowGap * (c.rows - 1);
+    };
     for (const c of cells) {
       const m = marginOf(c.node);
-      const rh = rowH.get(c.row);
-      const stretch = node.layout.align === "start" && rh !== undefined ? Math.max(4, rh - m.t - m.b) : undefined;
-      place(c.node, innerX + offsets[c.col] + m.l, rowY.get(c.row)! + m.t, Math.max(4, c.w - m.l - m.r), stretch);
+      const rh = cellH(c);
+      /* Растяжка по ряду (`align-items: stretch`) НЕ применяется к элементу с
+         заданной высотой — так сказано в спецификации, и так ведёт себя
+         браузер. Без этой оговорки разделительная линейка в 2px и колонка в
+         655px растягивались на всю высоту ряда сетки Guardian (1217px и
+         1336px), утаскивая за собой высоту всей страницы. */
+      const stretch =
+        node.layout.align === "start" && fixedH(c.node) === null
+          ? Math.max(4, rh - m.t - m.b)
+          : undefined;
+      place(c.node, innerX + offsets[c.col] + m.l, (rowY.get(c.row) ?? innerY) + m.t, Math.max(4, c.w - m.l - m.r), stretch);
       if (node.layout.align === "center" || node.layout.align === "end") {
         const own = rects.get(c.node.id)?.h ?? 0;
-        const free = (rowH.get(c.row) ?? 0) - own;
+        const free = rh - own;
         if (free > 0) offsetSubtree(c.node, 0, node.layout.align === "center" ? free / 2 : free);
       }
     }
@@ -554,44 +639,98 @@ export function computeLayout(
   /**
    * КЛАДКА: элементы разной высоты без дыр.
    *
-   * Каждый следующий элемент уходит в самую короткую на данный момент колонку —
-   * так работает CSS `columns` и любая masonry-галерея. Порядок при этом
-   * визуально идёт слева-направо, что для галереи и отзывов ожидаемо.
+   * Экспорт кладки — это `columns: N` (см. codegen), а CSS-колонки НЕ
+   * раскидывают элементы по самой короткой колонке: они заполняют колонки
+   * ПО ПОРЯДКУ, подбирая наименьшую высоту, при которой всё ещё влезает
+   * в N колонок (балансировка из спецификации CSS Multi-column).
+   *
+   * Раньше здесь была раскладка «следующий — в самую короткую», из-за
+   * которой холст показывал не тот порядок, который потом отдавал экспорт,
+   * а импорт живого сайта промахивался на целую колонку: на vitejs.dev
+   * карточки отзывов вставали 1-2-3-1-2-3 вместо 1-1-1-2-2-2.
    */
   const placeMasonry = (node: SceneNode, flow: SceneNode[], innerX: number, innerY: number, innerW: number): number => {
     const cols = Math.max(1, Math.min(6, node.layout.columns ?? 3));
     const gap = node.layout.gap;
     const rowGap = node.layout.rowGap ?? gap;
     const colW = Math.max(40, (innerW - gap * (cols - 1)) / cols);
-    const heights = Array.from({ length: cols }, () => 0);
 
-    for (const child of flow) {
-      let target = 0;
-      for (let i = 1; i < cols; i++) if (heights[i] < heights[target]) target = i;
-      const x = innerX + target * (colW + gap);
-      const y = innerY + heights[target] + (heights[target] > 0 ? rowGap : 0);
-      const h = place(child, x, y, colW);
-      heights[target] = y - innerY + h;
+    // первый проход — настоящие высоты при ширине колонки
+    const hs = flow.map((c) => place(c, innerX, innerY, colW));
+
+    /** Разложить по порядку в колонки высотой не выше limit; null — не влезло. */
+    const fill = (limit: number): number[][] | null => {
+      const out: number[][] = [];
+      let cur: number[] = [];
+      let acc = 0;
+      for (let i = 0; i < flow.length; i++) {
+        const need = cur.length === 0 ? hs[i] : acc + rowGap + hs[i];
+        if (cur.length > 0 && need > limit) {
+          out.push(cur);
+          cur = [i];
+          acc = hs[i];
+        } else {
+          cur.push(i);
+          acc = need;
+        }
+      }
+      if (cur.length > 0) out.push(cur);
+      return out.length <= cols ? out : null;
+    };
+
+    const total = hs.reduce((a, b) => a + b, 0) + rowGap * Math.max(0, flow.length - 1);
+    let best = fill(total) ?? [flow.map((_, i) => i)];
+    let lo = Math.max(0, ...hs);
+    let hi = Math.round(total);
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const got = fill(mid);
+      if (got) {
+        best = got;
+        hi = mid - 1;
+      } else lo = mid + 1;
     }
-    return Math.max(...heights, 0);
+
+    let tallest = 0;
+    best.forEach((column, ci) => {
+      const x = innerX + ci * (colW + gap);
+      let y = innerY;
+      for (const i of column) {
+        const h = place(flow[i], x, y, colW);
+        y += h + rowGap;
+      }
+      tallest = Math.max(tallest, y - innerY - (column.length > 0 ? rowGap : 0));
+    });
+    return tallest;
   };
 
   /** Ряд с переносом: набираем строки, пока влезают, дальше — новая строка. */
   const placeWrappedRow = (node: SceneNode, flow: SceneNode[], innerX: number, innerY: number, innerW: number): number => {
     const gap = node.layout.gap;
     const rowGap = node.layout.rowGap ?? gap;
-    type Line = { items: Array<{ node: SceneNode; w: number }>; w: number };
+    /* Внешние отступы в переносимой строке считаются так же, как в обычной:
+       снаружи коробки. Без этого перенос происходил не там, где в браузере,
+       а соседи по строке съезжали влево на сумму пропущенных отступов. */
+    type Item = { node: SceneNode; w: number; outer: number; m: Sides };
+    type Line = { items: Item[]; w: number };
     const lines: Line[] = [];
     let line: Line = { items: [], w: 0 };
 
     for (const child of flow) {
-      const cw = Math.min(resolvedW(child, innerW), innerW);
-      const need = line.items.length === 0 ? cw : line.w + gap + cw;
-      if (line.items.length > 0 && need > innerW) {
+      const m = marginOf(child);
+      const cw = Math.min(resolvedW(child, Math.max(4, innerW - m.l - m.r)), innerW);
+      const outer = cw + m.l + m.r;
+      const need = line.items.length === 0 ? outer : line.w + gap + outer;
+      /* ДОПУСК НА ОКРУГЛЕНИЕ. Ширины в снимке дробные (732.656px), в модели
+         целые, и текст меряется приближённо: строка, ровно заполнявшая
+         родителя, переполняла его на пиксель и рвалась пополам. У колонок
+         smashingmagazine.com (733 + 105 + 419 против 1256) это удваивало
+         высоту секции. Настоящий перенос переполняет заметно больше. */
+      if (line.items.length > 0 && need > innerW + Math.max(2, innerW * 0.004)) {
         lines.push(line);
-        line = { items: [{ node: child, w: cw }], w: cw };
+        line = { items: [{ node: child, w: cw, outer, m }], w: outer };
       } else {
-        line.items.push({ node: child, w: cw });
+        line.items.push({ node: child, w: cw, outer, m });
         line.w = need;
       }
     }
@@ -600,17 +739,30 @@ export function computeLayout(
     let cy = innerY;
     for (const l of lines) {
       let cx = innerX;
-      if (node.layout.justify === "center") cx += Math.max(0, (innerW - l.w) / 2);
-      else if (node.layout.justify === "end") cx += Math.max(0, innerW - l.w);
-      const extra =
-        node.layout.justify === "between" && l.items.length > 1
-          ? Math.max(0, (innerW - l.w) / (l.items.length - 1))
-          : 0;
+      const justify = node.layout.justify;
+      const free = Math.max(0, innerW - l.w);
+      let extra = 0;
+      /* around и evenly раньше проваливались в «пакуем слева»: строка с
+         `justify-content: space-around` вставала вплотную к левому краю,
+         и весь подвал bun.sh уезжал на 818px. Раскладка та же, что у ряда
+         без переноса, только считается для каждой строки отдельно. */
+      if (justify === "center") cx += free / 2;
+      else if (justify === "end") cx += free;
+      else if (l.items.length > 1 && justify === "between") extra = free / (l.items.length - 1);
+      else if (l.items.length > 0 && justify === "evenly") {
+        const unit = free / (l.items.length + 1);
+        cx += unit;
+        extra = unit;
+      } else if (l.items.length > 0 && justify === "around") {
+        const unit = free / (l.items.length * 2);
+        cx += unit;
+        extra = unit * 2;
+      }
       let maxH = 0;
       for (const item of l.items) {
-        const h = place(item.node, cx, cy, item.w);
+        const h = place(item.node, cx + item.m.l, cy + item.m.t, item.w) + item.m.t + item.m.b;
         maxH = Math.max(maxH, h);
-        cx += item.w + gap + extra;
+        cx += item.outer + gap + extra;
       }
       cy += maxH + rowGap;
     }

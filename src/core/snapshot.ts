@@ -40,6 +40,13 @@ export interface SnapNode {
   s: Record<string, string>;
   /** Собственный текст элемента (без текста детей). */
   x?: string;
+  /**
+   * Тот же текст, но с метками (символ с кодом 0) на местах детей.
+   * Пишется только когда хоть один ребёнок стоит не в конце — см. `ownText`.
+   * У снимков, снятых до появления поля, его нет: читатель обязан
+   * откатываться на `x`.
+   */
+  xm?: string;
   /** Атрибуты: src, href, alt, placeholder, type… */
   a?: Record<string, string>;
   /** Пропорции картинки из natural-размеров. */
@@ -104,6 +111,15 @@ export function collectorScript(opts: { maxNodes?: number; settleMs?: number } =
   var PROPS = ${JSON.stringify(SNAP_PROPS)};
   var MAX_NODES = ${maxNodes};
   var SETTLE = ${settleMs};
+  /* Метка места ребёнка в собственном тексте и перевод строки. Оба заданы
+     кодами, а не литералами: текст сборщика едет сюда шаблонной строкой,
+     где обратный слэш пришлось бы удваивать, и правка рядом молча ломала
+     бы синтаксис уже внутри чужой страницы. */
+  var MARK = String.fromCharCode(0);
+  var NL = String.fromCharCode(10);
+  /* Служебный знак для настоящего тега BR: отличает перенос разметки от
+     перевода строки в исходнике, который в обычном абзаце — просто пробел. */
+  var BR = String.fromCharCode(1);
   var SKIP = { SCRIPT:1, STYLE:1, LINK:1, META:1, NOSCRIPT:1, TEMPLATE:1, HEAD:1, TITLE:1, BASE:1, BR:1, WBR:1 };
   /* Значения, совпадающие с дефолтом браузера: в снимок не попадают.
      Сборщик сцены обязан трактовать отсутствие свойства как этот дефолт. */
@@ -141,14 +157,75 @@ export function collectorScript(opts: { maxNodes?: number; settleMs?: number } =
     else window.addEventListener('load', step, { once: true });
   }
 
-  function ownText(el) {
-    var out = '';
+  /**
+   * СОБСТВЕННЫЙ ТЕКСТ ЭЛЕМЕНТА ВМЕСТЕ С МЕСТАМИ ДЕТЕЙ.
+   *
+   * Раньше собирался только текст, а места дочерних элементов терялись.
+   * Сборщик сцены потом склеивал «свой текст, следом текст детей», и порядок
+   * слов ломался на любом смешанном содержимом: ссылка вида
+   * a > span«#» + «discuss» давала «discuss #», а абзац Википедии со
+   * ссылками внутри превращался в текст, к которому все ссылки приписаны
+   * хвостом. Для редактора страниц это порча содержимого, а не мелочь.
+   *
+   * Возвращает две строки: чистый текст (поле x, каким он был) и текст с
+   * метками на местах детей (поле xm). Вторая пишется в снимок ТОЛЬКО когда
+   * хоть один ребёнок стоит не в самом конце: если все дети хвостовые,
+   * прежняя склейка и так верна, а лишнее поле удвоило бы текст.
+   *
+   * Нормализация пробелов прежняя (пробельные символы схлопываются в один
+   * пробел, пробелы вокруг перевода строки убираются, края обрезаются), но
+   * выполняется посимвольно: только так метку можно поставить между двумя
+   * словами, сохранив разделяющий их пробел.
+   */
+  /* ПЕРЕВОД СТРОКИ В ИСХОДНИКЕ — ЭТО ПРОБЕЛ.
+     В обычном абзаце (white-space: normal) браузер сворачивает перевод
+     строки разметки в пробел: строки он раскладывает сам, по ширине
+     колонки. Сборщик же писал перевод в снимок как есть, и дальше он
+     доезжал до сцены жёстким переносом — абзац лонгрида в 585 знаков с
+     одиннадцатью переводами в исходнике занимал двенадцать строк вместо
+     восьми. Ошибка ЧИСТО в тексте: ширина совпадала точно.
+     Настоящий перенос, тег BR, сохраняется: он значим при любом
+     white-space, и отличить его от форматирования исходника можно
+     только здесь, у самой разметки. */
+  function ownText(el, collapseNl) {
+    var raw = '';
+    var marks = [];
     for (var i = 0; i < el.childNodes.length; i++) {
       var n = el.childNodes[i];
-      if (n.nodeType === 3) out += n.nodeValue;
-      else if (n.nodeType === 1 && n.tagName === 'BR') out += '\\n';
+      if (n.nodeType === 3) raw += n.nodeValue;
+      else if (n.nodeType === 1 && n.tagName === 'BR') raw += BR;
+      else if (n.nodeType === 1) marks.push(raw.length);
     }
-    return out.replace(/[ \\t\\r\\f\\v]+/g, ' ').replace(/ *\\n */g, '\\n').trim();
+    var plain = '';
+    var mark = '';
+    var sp = 0, nl = 0, mi = 0;
+    for (var k = 0; k <= raw.length; k++) {
+      while (mi < marks.length && marks[mi] === k) {
+        // пробел перед меткой выносим в строку сразу: иначе он потеряется
+        if (!nl && sp && mark) { mark += ' '; sp = 0; }
+        mark += MARK;
+        mi++;
+      }
+      if (k === raw.length) break;
+      var ch = raw.charAt(k);
+      if (ch === BR) { nl++; sp = 0; }
+      else if (ch === NL && collapseNl) { if (!nl) sp = 1; }
+      else if (ch === NL) { nl++; sp = 0; }
+      else if (ch === ' ' || ch === String.fromCharCode(9) || ch === String.fromCharCode(13) || ch === String.fromCharCode(12) || ch === String.fromCharCode(11)) { if (!nl) sp = 1; }
+      else {
+        if (nl) {
+          for (var q = 0; q < nl; q++) { if (plain) plain += NL; if (mark) mark += NL; }
+          nl = 0; sp = 0;
+        } else if (sp) {
+          if (plain) plain += ' ';
+          if (mark) mark += ' ';
+          sp = 0;
+        }
+        plain += ch;
+        mark += ch;
+      }
+    }
+    return { text: plain, marked: mark };
   }
 
   var ATTRS = ['src','href','alt','placeholder','type','name','value','role','aria-label','data','loading','srcset'];
@@ -185,7 +262,9 @@ export function collectorScript(opts: { maxNodes?: number; settleMs?: number } =
 
       var box = el.getBoundingClientRect();
       var w = Math.round(box.width), h = Math.round(box.height);
-      var text = ownText(el);
+      var ws = cs.whiteSpace || 'normal';
+      var parts = ownText(el, ws.indexOf('pre') !== 0 && ws !== 'break-spaces');
+      var text = parts.text;
       var hasKids = el.children && el.children.length > 0;
       // нулевой размер без текста и детей — служебная обёртка
       if (w <= 0 && h <= 0 && !text && !hasKids) { skipped++; return; }
@@ -216,6 +295,13 @@ export function collectorScript(opts: { maxNodes?: number; settleMs?: number } =
       }
       if (el.id) rec.i = String(el.id).slice(0, 60);
       if (text) rec.x = text.length > 2000 ? text.slice(0, 2000) : text;
+      /* Текст с местами детей пишем, только когда хоть один ребёнок стоит
+         НЕ в конце: иначе склейка «свой текст, потом дети» и так верна, а
+         поле удвоило бы текст в снимке. */
+      var interior = parts.marked.replace(new RegExp(MARK + '+$'), '');
+      if (interior !== parts.text && interior.indexOf(MARK) >= 0) {
+        rec.xm = interior.length > 2200 ? interior.slice(0, 2200) : interior;
+      }
       var a = attrs(el);
       if (a) rec.a = a;
 
@@ -312,6 +398,21 @@ export function snapColor(value: string | undefined): { hex: string; alpha: numb
 }
 
 /**
+ * ИЗМЕРЕННЫЕ ширины дорожек в пикселях, как их посчитал браузер.
+ *
+ * В отличие от `snapTracks` здесь ничего не сворачивается в доли: это сырьё
+ * для сопоставления детей с дорожками по геометрии. Имена линий в
+ * вычисленном значении приходят в квадратных скобках
+ * (`[content-start] 60px [content-end]`) и на дорожки не влияют —
+ * `parseFloat("[content-start]")` даёт NaN, такие лексемы отбрасываем.
+ */
+export function snapTrackPx(value: string | undefined): number[] | null {
+  if (!value || value === "none") return null;
+  const nums = value.split(/\s+/).map((t) => parseFloat(t)).filter((n) => Number.isFinite(n));
+  return nums.length > 0 ? nums : null;
+}
+
+/**
  * `grid-template-columns` из снимка — это УЖЕ использованные пиксели
  * (`"297.5px 297.5px 297.5px"`), а не исходные `1fr 1fr 1fr`.
  * Равные дорожки сворачиваем в доли: так сетка останется адаптивной,
@@ -322,9 +423,21 @@ export function snapTracks(value: string | undefined): Array<{ fr?: number; px?:
   const nums = value.split(/\s+/).map((t) => parseFloat(t)).filter((n) => Number.isFinite(n));
   if (nums.length < 2) return null;
   const max = Math.max(...nums);
-  const min = Math.min(...nums);
+  // все дорожки нулевые — сетки как таковой нет
+  if (!(max > 0)) return null;
+  /* Делитель для долей — наименьшая ПОЛОЖИТЕЛЬНАЯ дорожка. Пустые дорожки
+     в вычисленном стиле встречаются постоянно (`grid-template-columns:
+     repeat(3, 1fr) 0px` у сеток с пустой служебной колонкой), и деление на
+     ноль давало `fr: Infinity`. Дальше frTotal тоже уходил в Infinity, а
+     `free * Infinity / Infinity` — уже NaN: на stripe.com 74 узла получали
+     ширину NaN и просто исчезали с холста. */
+  const min = Math.min(...nums.filter((n) => n > 0));
   // разброс меньше 2% — считаем колонки равными
-  if (max - min < max * 0.02) return nums.map(() => ({ fr: 1 }));
+  if (max - min < max * 0.02 && nums.every((n) => n > 0)) return nums.map(() => ({ fr: 1 }));
   // иначе доли пропорционально измеренным ширинам: сайдбар и асимметрия
-  return nums.map((n) => (n < 200 && n / max < 0.35 ? { px: Math.round(n) } : { fr: Math.round((n / min) * 100) / 100 }));
+  return nums.map((n) =>
+    n <= 0 || (n < 200 && n / max < 0.35)
+      ? { px: Math.max(0, Math.round(n)) }
+      : { fr: Math.round((n / min) * 100) / 100 },
+  );
 }

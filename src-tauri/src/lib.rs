@@ -279,34 +279,70 @@ fn kill_command(registry: State<'_, ProcRegistry>, id: u64) -> Result<(), String
     Ok(())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-
 /* ------------------------------------------------------------------ */
 /* Снимок живой страницы                                               */
 /* ------------------------------------------------------------------ */
 
-/// Ожидающие снимки: id запроса → канал, куда webview положит результат.
-pub struct SnapRegistry(Mutex<HashMap<u64, std::sync::mpsc::Sender<String>>>);
+/// Ожидающие снимки: МЕТКА ОКНА → канал, куда webview положит результат.
+///
+/// Ключ — именно метка окна, а не число из аргументов. Раньше страница
+/// сама сообщала `id`, то есть чужой сайт мог назвать любой номер и
+/// подменить результат соседнего импорта. Метку окна берёт сам Tauri из
+/// того webview, который сделал вызов, — подделать её со стороны страницы
+/// нечем.
+pub struct SnapRegistry(Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>);
 
 static NEXT_SNAP_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Страница отдаёт снимок обратно: вызывается ИЗ скрытого webview.
-#[tauri::command]
-fn snapshot_result(registry: State<'_, SnapRegistry>, id: u64, payload: String) -> Result<(), String> {
-    let map = registry.0.lock().unwrap();
-    if let Some(tx) = map.get(&id) {
+/// Потолок на размер снимка: страница отдаёт его сама, и доверять её
+/// аппетиту нельзя. ~24 МБ хватает на страницу в 4000 узлов с запасом.
+const SNAP_MAX_BYTES: usize = 24 * 1024 * 1024;
+
+/// Отдать результат ожидающему `capture_snapshot` — ровно один раз.
+fn deliver(registry: &State<'_, SnapRegistry>, label: &str, payload: String) {
+    // забираем отправителя: повторный вызов из той же страницы уже
+    // ничего не изменит, а окно всё равно закрывается сразу после
+    let tx = registry.0.lock().unwrap().remove(label);
+    if let Some(tx) = tx {
         let _ = tx.send(payload);
     }
+}
+
+/// Страница отдаёт снимок обратно: вызывается ИЗ скрытого окна снимка.
+#[tauri::command]
+fn snapshot_result(
+    webview: tauri::Webview,
+    registry: State<'_, SnapRegistry>,
+    payload: String,
+) -> Result<(), String> {
+    if payload.len() > SNAP_MAX_BYTES {
+        deliver(
+            &registry,
+            webview.label(),
+            "{\"error\":\"снимок страницы слишком велик\"}".to_string(),
+        );
+        return Err("снимок страницы слишком велик".into());
+    }
+    deliver(&registry, webview.label(), payload);
     Ok(())
 }
 
 /// Ошибка сборки снимка внутри страницы.
 #[tauri::command]
-fn snapshot_failed(registry: State<'_, SnapRegistry>, id: u64, message: String) -> Result<(), String> {
-    let map = registry.0.lock().unwrap();
-    if let Some(tx) = map.get(&id) {
-        let _ = tx.send(format!("{{\"error\":{}}}", serde_json::to_string(&message).unwrap_or_default()));
-    }
+fn snapshot_failed(
+    webview: tauri::Webview,
+    registry: State<'_, SnapRegistry>,
+    message: String,
+) -> Result<(), String> {
+    let short: String = message.chars().take(500).collect();
+    deliver(
+        &registry,
+        webview.label(),
+        format!(
+            "{{\"error\":{}}}",
+            serde_json::to_string(&short).unwrap_or_else(|_| "\"неизвестная ошибка\"".into())
+        ),
+    );
     Ok(())
 }
 
@@ -329,54 +365,73 @@ async fn capture_snapshot(
     height: u32,
     timeout_ms: u64,
 ) -> Result<String, String> {
+    /* Адрес разбираем ДО открытия окна и пускаем только http(s):
+       capability окна снимка выдана источникам `http://*` и `https://*`,
+       а file:// или чужая схема в скрытом окне нам не нужны вовсе. */
+    let target: tauri::Url = url.parse().map_err(|e| format!("плохой адрес: {e}"))?;
+    if !matches!(target.scheme(), "http" | "https") {
+        return Err("снимок делается только по http и https".into());
+    }
+
     let id = NEXT_SNAP_ID.fetch_add(1, Ordering::SeqCst);
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    registry.0.lock().unwrap().insert(id, tx);
-
-    // Скрипт-обёртка: ждёт сборку, снимает, отдаёт результат через IPC.
-    // Ошибку тоже сообщаем — молчащий импорт хуже честной ошибки.
-    let bootstrap = format!(
-        r#"
-(function () {{
-  if (window.__plxSnapDone) return;
-  window.__plxSnapDone = true;
-  var ID = {id};
-  function send(cmd, args) {{
-    try {{
-      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {{
-        window.__TAURI_INTERNALS__.invoke(cmd, args);
-      }}
-    }} catch (e) {{ /* мост недоступен — окно закроется по таймауту */ }}
-  }}
-  Promise.resolve()
-    .then(function () {{ return {collector}; }})
-    .then(function (snap) {{ send('snapshot_result', {{ id: ID, payload: JSON.stringify(snap) }}); }})
-    .catch(function (e) {{ send('snapshot_failed', {{ id: ID, message: String(e && e.message || e) }}); }});
-}})();
-"#,
-        id = id,
-        collector = collector
-    );
-
     let label = format!("plx-snap-{id}");
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    registry.0.lock().unwrap().insert(label.clone(), tx);
+
+    /* Скрипт-обёртка: ждёт сборку, снимает, отдаёт результат через IPC.
+       Ошибку тоже сообщаем — молчащий импорт хуже честной ошибки.
+       Номера запроса в скрипте НЕТ: ожидающий канал ищется по метке окна,
+       которую подставляет Tauri, а не страница.
+
+       Собираем конкатенацией, а не `format!`: текст сборщика полон фигурных
+       скобок, и экранировать их в шаблоне — верный способ ошибиться. */
+    let bootstrap = String::new()
+        + "(function () {\n"
+        + "  if (window.__plxSnapDone) return;\n"
+        + "  window.__plxSnapDone = true;\n"
+        + "  function send(cmd, args) {\n"
+        + "    try {\n"
+        + "      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {\n"
+        + "        window.__TAURI_INTERNALS__.invoke(cmd, args);\n"
+        + "      }\n"
+        + "    } catch (e) { /* мост недоступен — окно закроется по таймауту */ }\n"
+        + "  }\n"
+        + "  Promise.resolve()\n"
+        + "    .then(function () { return (\n"
+        + &collector
+        + "\n); })\n"
+        + "    .then(function (snap) { send('snapshot_result', { payload: JSON.stringify(snap) }); })\n"
+        + "    .catch(function (e) { send('snapshot_failed', { message: String((e && e.message) || e) }); });\n"
+        + "})();\n";
+
     let window = tauri::WebviewWindowBuilder::new(
         &app,
         &label,
-        tauri::WebviewUrl::External(url.parse().map_err(|e| format!("плохой адрес: {e}"))?),
+        tauri::WebviewUrl::External(target),
     )
     .title("Plexus: снимок страницы")
     .inner_size(width as f64, height as f64)
     .visible(false)
+    .focused(false)
+    // сеанс не сохраняется: чужие куки и хранилище не переживают снимок
+    .incognito(true)
+    .disable_drag_drop_handler()
+    // редирект на file:// или на app-схему из скрытого окна — не наш случай
+    .on_navigation(|u| matches!(u.scheme(), "http" | "https"))
+    // главный фрейм, не все: сборщик не должен попадать в чужие iframe
     .initialization_script(&bootstrap)
     .build()
-    .map_err(|e| format!("не удалось открыть окно снимка: {e}"))?;
+    .map_err(|e| {
+        registry.0.lock().unwrap().remove(&label);
+        format!("не удалось открыть окно снимка: {e}")
+    })?;
 
     let wait = std::time::Duration::from_millis(timeout_ms.clamp(3_000, 60_000));
     let result = tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(wait))
         .await
         .map_err(|e| e.to_string())?;
 
-    registry.0.lock().unwrap().remove(&id);
+    registry.0.lock().unwrap().remove(&label);
     let _ = window.close();
 
     match result {
@@ -389,6 +444,10 @@ async fn capture_snapshot(
     }
 }
 
+/// Точка входа. Атрибут мобильной точки входа раньше стоял этажом выше и
+/// прилипал к объявлению `SnapRegistry`, а не к этой функции: на десктопе
+/// `mobile` выключен и он просто исчезал, поэтому ошибку никто не видел.
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

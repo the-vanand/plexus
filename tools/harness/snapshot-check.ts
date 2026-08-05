@@ -26,6 +26,7 @@ const { createStarterDocument } = await import("../../src/core/scene");
 const { generateProject } = await import("../../src/core/codegen");
 const { measureStub } = await import("./measure-stub");
 type PageSnapshot = import("../../src/core/snapshot").PageSnapshot;
+type SnapNode = import("../../src/core/snapshot").SnapNode;
 type SceneNode = import("../../src/core/types").SceneNode;
 
 const path = process.argv[2] ?? "fixtures/snapshots/cospex-1920.json";
@@ -37,7 +38,7 @@ doc.rootFrames = [];
 doc.wires = [];
 
 const t0 = Date.now();
-const out = importSnapshotToDoc(doc, { snapshot: snap, pageName: "COSPEX (снимок)" });
+const out = importSnapshotToDoc(doc, { snapshot: snap, pageName: "COSPEX (снимок)", trace: true });
 const ms = Date.now() - t0;
 const rects = computeLayout(doc, measureStub);
 
@@ -74,17 +75,62 @@ for (const w of out.warnings) console.log(`  ! ${w}`);
 /* ------------------------------------------------------------------ */
 
 /**
- * Сопоставляем узел сцены с узлом снимка по тексту и типу: id снимка в
- * сцену не переносятся, а текст уникален почти всегда.
+ * СОПОСТАВЛЕНИЕ УЗЛА СЦЕНЫ С УЗЛОМ СНИМКА.
+ *
+ * Раньше пары искались по тексту очередью FIFO: «первый неиспользованный
+ * узел снимка с таким же текстом». Предположение «текст уникален почти
+ * всегда» оказалось неверным для настоящих страниц. Независимая проверка
+ * двумя способами (трасса импорта и биекция уникальных текстов) показала,
+ * что очередь ошибается на 27–29% пар на новостной ленте и лендинге, а на
+ * страницах с подсвеченным кодом — на каждом десятом узле: там сотни
+ * одинаковых токенов (`(`, `;`, имена переменных), и стоит одному узлу
+ * пропасть, как очередь сдвигается и токен из одного блока сверяется с
+ * токеном из другого. Прибор при этом занижал точность на целый балл:
+ * медиана dx 11 против 1, dw 11 против 3, доля точных 90% против 97%.
+ *
+ * Теперь пара берётся из ТРАССЫ импорта — фактического соответствия
+ * «узел сцены → индекс в снимке», которое импортёр заполняет по ходу
+ * работы. Это не догадка по тексту, а сам факт: из какого узла снимка
+ * получился данный узел сцены.
+ *
+ * Трассу заполняет проверяемый код, поэтому доверять ей вслепую нельзя:
+ * ошибочная разметка трассы подсунула бы приятные пары. Защиты две. Первая:
+ * каждая пара сверяется по тексту, несогласные отбрасываются и считаются
+ * отдельно (`traceRejected`). Вторая: контрольная цифра — та же метрика по
+ * независимой биекции уникальных текстов, где трасса не участвует вовсе.
+ *
+ * Контроль считается ТОЛЬКО НА ПЕРЕСЕЧЕНИИ выборок. Первая версия сравнивала
+ * все узлы с уникальным текстом против всех пар трассы и потому не проверяла
+ * ничего: совокупности разные, а неверно расставлены как раз узлы с
+ * ПОВТОРЯЮЩИМСЯ текстом, которых контроль не видит вовсе. Такая цифра
+ * систематически оптимистична и создавала ложное чувство проверки.
  */
-const snapByText = new Map<string, number[]>();
+const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+
+/** Текст пары согласуется, если одна строка начинается с другой. */
+const textAgrees = (sceneText: string, snapNode: SnapNode | undefined): boolean => {
+  if (!snapNode) return false;
+  const a = norm(sceneText);
+  const b = norm(snapNode.x ?? "");
+  if (!a || !b) return false;
+  const head = Math.min(24, a.length, b.length);
+  return a.slice(0, head) === b.slice(0, head);
+};
+
+/** Уникальные тексты снимка — для независимой контрольной цифры. */
+const uniqueSnap = new Map<string, number>();
+const seenTwice = new Set<string>();
 snap.nodes.forEach((n, i) => {
   if (!n.x) return;
-  const key = n.x.slice(0, 60);
-  const arr = snapByText.get(key);
-  if (arr) arr.push(i);
-  else snapByText.set(key, [i]);
+  const key = norm(n.x).slice(0, 60);
+  if (!key) return;
+  if (uniqueSnap.has(key)) {
+    seenTwice.add(key);
+    return;
+  }
+  uniqueSnap.set(key, i);
 });
+for (const k of seenTwice) uniqueSnap.delete(k);
 
 interface Diff {
   name: string;
@@ -98,22 +144,44 @@ const diffs: Diff[] = [];
 const frameX = doc.nodes[out.frameId]!.layout.x;
 const frameY = doc.nodes[out.frameId]!.layout.y;
 
+/** Пары по трассе: только те, где текст согласуется. */
+let traceRejected = 0;
+/** Пересечение выборок: одни и те же узлы, сопоставленные двумя способами. */
+const ctrlTrace: Diff[] = [];
+const ctrlUniq: Diff[] = [];
+
 for (const node of nodes) {
   if (!node.text) continue;
-  const key = node.text.slice(0, 60);
-  const candidates = snapByText.get(key);
-  if (!candidates || candidates.length === 0) continue;
-  const src = snap.nodes[candidates.shift()!];
   const r = rects.get(node.id);
   if (!r) continue;
-  diffs.push({
+
+  const idx = out.trace?.get(node.id);
+  const src = idx === undefined ? undefined : snap.nodes[idx];
+  const d = (s: SnapNode): Diff => ({
     name: node.name,
-    text: node.text.slice(0, 34).replace(/\n/g, "⏎"),
-    dx: Math.round(r.x - frameX - src.r[0]),
-    dy: Math.round(r.y - frameY - src.r[1]),
-    dw: Math.round(r.w - src.r[2]),
-    dh: Math.round(r.h - src.r[3]),
+    text: node.text!.slice(0, 34).replace(/\n/g, "⏎"),
+    dx: Math.round(r.x - frameX - s.r[0]),
+    dy: Math.round(r.y - frameY - s.r[1]),
+    dw: Math.round(r.w - s.r[2]),
+    dh: Math.round(r.h - s.r[3]),
   });
+
+  const paired = Boolean(src) && textAgrees(node.text, src);
+  if (paired) diffs.push(d(src!));
+  else if (idx !== undefined) traceRejected += 1;
+
+  /* КОНТРОЛЬ ДОВЕРИЯ К ТРАССЕ — только на ПЕРЕСЕЧЕНИИ выборок.
+     Первая версия считала контроль по всем узлам с уникальным текстом и
+     потому ничего не проверяла: совокупности разные, а неверно расставлены
+     как раз узлы с ПОВТОРЯЮЩИМСЯ текстом, которых контроль не видит. Такая
+     цифра систематически оптимистична. Сравнивать нужно две метрики на
+     одних и тех же узлах: где есть и пара по трассе, и пара по уникальному
+     тексту. Если трасса размечена неверно, её dx окажется ХУЖЕ. */
+  const uIdx = uniqueSnap.get(norm(node.text).slice(0, 60));
+  if (uIdx !== undefined && paired) {
+    ctrlTrace.push(d(src!));
+    ctrlUniq.push(d(snap.nodes[uIdx]));
+  }
 }
 
 const stat = (vals: number[]) => {
@@ -141,6 +209,18 @@ for (const [label, vals] of [
     `  ${label.padEnd(16)}${String(s.mean).padStart(8)}px${String(s.med).padStart(8)}px${String(s.p90).padStart(6)}px${String(s.max).padStart(6)}px`,
   );
 }
+
+/* Контроль доверия к трассе: та же метрика по независимой биекции
+   уникальных текстов. Если числа расходятся заметно — трасса врёт. */
+const ctrlA = stat(ctrlTrace.map((d) => d.dx)).mean;
+const ctrlB = stat(ctrlUniq.map((d) => d.dx)).mean;
+console.log(
+  `\n  сопоставлено по трассе: ${diffs.length}` +
+    (traceRejected > 0 ? `, отброшено по несогласию текста: ${traceRejected}` : "") +
+    `\n  контроль на пересечении (${ctrlTrace.length} узлов): dx по трассе ${ctrlA}px, ` +
+    `по уникальному тексту ${ctrlB}px` +
+    (ctrlA > ctrlB + 2 ? "  ← ТРАССА ХУЖЕ, ей нельзя верить" : ""),
+);
 
 const withinX = diffs.filter((d) => Math.abs(d.dx) <= 4).length;
 const withinW = diffs.filter((d) => Math.abs(d.dw) <= 8).length;
@@ -183,5 +263,9 @@ console.log(
     dwMean: stat(diffs.map((d) => d.dw)).mean,
     withinX4: withinX,
     withinW8: withinW,
+    traceRejected,
+    ctrlPairs: ctrlTrace.length,
+    ctrlDxTrace: ctrlA,
+    ctrlDxUniq: ctrlB,
   })}\n`,
 );
