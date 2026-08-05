@@ -113,6 +113,46 @@ console.log("\n════ ПРОВЕРКИ СБОРКИ ════\n");
   record("vite build", r.ok && built, built ? "собралось" : reason(r, 2));
 }
 
+/* ---------- Node-глобалы в браузерном коде ---------- */
+{
+  /**
+   * `src/` исполняется в webview, где нет ни `process`, ни `require`. Один
+   * забытый отладочный переключатель `process.env.NOPT` в импортёре снимка
+   * ронял импорт уже ПОСЛЕ успешного снятия страницы: «process is not
+   * defined». Ни `tsc`, ни стенды этого не видели: под Node глобал
+   * существует, а типы для него подключены как devDependency.
+   *
+   * Единственное законное исключение — `codegen.ts`: он ПОРОЖДАЕТ код
+   * Node-сервера, и `require` с `process.env` лежат там внутри шаблонных
+   * строк как текст будущего файла. Исключение сделано по имени файла
+   * намеренно: первая версия проверки пыталась отличить шаблонную строку по
+   * чётности обратных кавычек и промахнулась — в комментариях проекта их
+   * сотни, чётность случайна, и настоящая поломка была пропущена. Правило
+   * по имени файла грубее, зато не врёт.
+   */
+  const banned = /\b(process\.(env|argv|cwd)|__dirname|__filename|require\()/g;
+  const ALLOWED = new Set([join("src", "core", "codegen.ts")]);
+  const hits = [];
+  const walkSrc = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walkSrc(full);
+      else if (/\.tsx?$/.test(e.name) && !ALLOWED.has(full)) {
+        const src = readFileSync(full, "utf8");
+        for (const m of src.matchAll(banned)) {
+          hits.push(`${full}:${src.slice(0, m.index).split("\n").length} ${m[0]}`);
+        }
+      }
+    }
+  };
+  if (existsSync("src")) walkSrc("src");
+  record(
+    "браузерный код чист",
+    hits.length === 0,
+    hits.length === 0 ? "Node-глобалов нет (кроме шаблонов кодогена)" : hits.slice(0, 3).join(" | "),
+  );
+}
+
 /* ---------- баланс блочных комментариев в Rust ---------- */
 {
   /**
