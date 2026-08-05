@@ -27,7 +27,7 @@
  *   -N         → падение не более чем на N (рост разрешён всегда).
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const baseline = JSON.parse(readFileSync("tools/ci/baseline.json", "utf8"));
@@ -111,6 +111,46 @@ console.log("\n════ ПРОВЕРКИ СБОРКИ ════\n");
   const r = runBin("vite", "vite", ["build"]);
   const built = /built in/.test(r.out);
   record("vite build", r.ok && built, built ? "собралось" : reason(r, 2));
+}
+
+/* ---------- баланс блочных комментариев в Rust ---------- */
+{
+  /**
+   * Единственная проверка Rust, возможная без тулчейна — и она поймала бы
+   * настоящую поломку сборки. Блочные комментарии в Rust ВЛОЖЕННЫЕ, поэтому
+   * запись схемы со звёздочкой внутри комментария (двойной слэш плюс
+   * звёздочка) открывает вложенный комментарий: внешний остаётся незакрытым
+   * и съедает файл. Компилятор падает с E0758, но в песочнице компилятора
+   * нет, и до этой проверки ошибка доезжала до чужой машины.
+   */
+  const files = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name !== "target" && e.name !== "gen") walk(full);
+      } else if (e.name.endsWith(".rs")) files.push(full);
+    }
+  };
+  const bad = [];
+  if (existsSync("src-tauri")) {
+    walk("src-tauri");
+    for (const f of files) {
+      const src = readFileSync(f, "utf8");
+      let depth = 0;
+      let line = 1;
+      const opens = [];
+      for (let i = 0; i < src.length - 1; ) {
+        if (src[i] === "\n") line += 1;
+        const two = src.slice(i, i + 2);
+        if (two === "/*") { depth += 1; opens.push(line); i += 2; continue; }
+        if (two === "*/") { depth -= 1; opens.pop(); i += 2; continue; }
+        i += 1;
+      }
+      if (depth !== 0) bad.push(`${f}: глубина ${depth}, не закрыт со строк ${opens.join(", ")}`);
+    }
+  }
+  record("rust: комментарии", bad.length === 0, bad.length === 0 ? `${files.length} файлов сбалансированы` : bad.join(" | "));
 }
 
 /* ---------- самосудящие стенды ---------- */
