@@ -1,7 +1,21 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Базовые разрешения главного окна Plexus",
+  "description": "Базовые разрешения главного окна Plexus. Команды перечислены поимённо: после объявления app_manifest в build.rs проверка ACL включена и для собственных команд приложения, поэтому список закрытый. Команд снимка здесь НЕТ — их зовёт только окно снимка.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "allow-home-dir",
+    "allow-project-root",
+    "allow-list-dir",
+    "allow-read-text-file",
+    "allow-write-text-file",
+    "allow-copy-into-assets",
+    "allow-fetch-url",
+    "allow-run-command",
+    "allow-start-command",
+    "allow-kill-command",
+    "allow-capture-snapshot"
+  ]
 }

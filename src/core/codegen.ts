@@ -321,12 +321,34 @@ function cssForNode(node: SceneNode, parent: SceneNode | null, theme: ResolvedTh
   }
   // колонка страницы: max-width + центрирование — то, чего в модели не было
   if (layout.maxWidth !== undefined) d.push(["max-width", `${Math.round(layout.maxWidth)}px`]);
+  /* Потолок высоты без `overflow` бессмысленен: содержимое просто вылезло бы
+     наружу. Пара «max-height + overflow:auto» и есть прокручиваемая коробка. */
+  if (layout.maxHeight !== undefined) {
+    d.push(["max-height", `${Math.round(layout.maxHeight)}px`]);
+    d.push(["overflow", "auto"]);
+  }
+  /* Строка, которую оригинал не переносил (см. `LayoutProps.noWrap`): в
+     экспорте это ровно `white-space: nowrap`, иначе экспорт разошёлся бы с
+     холстом на лишнюю строку. */
+  if (layout.noWrap) d.push(["white-space", "nowrap"]);
+  // лента с горизонтальной прокруткой: не переносится и не сжимается
+  if (layout.scrollX) {
+    d.push(["overflow-x", "auto"]);
+    d.push(["flex-wrap", "nowrap"]);
+  }
   const mg = layout.margin;
   if (mg && (mg.t || mg.r || mg.b || mg.l)) {
     d.push(["margin", `${mg.t}px ${layout.centered ? "auto" : `${mg.r}px`} ${mg.b}px ${layout.centered ? "auto" : `${mg.l}px`}`]);
   } else if (layout.centered) d.push(["margin-inline", "auto"]);
-  if (layout.gridSpan !== undefined) {
-    d.push(["grid-column", layout.gridSpan === "full" ? "1 / -1" : `span ${layout.gridSpan}`]);
+  if (layout.gridSpan !== undefined || layout.gridColumn !== undefined) {
+    const span = layout.gridSpan === "full" ? null : Math.max(1, layout.gridSpan ?? 1);
+    const start = layout.gridColumn;
+    d.push([
+      "grid-column",
+      span === null ? "1 / -1"
+      : start !== undefined ? `${start} / span ${span}`
+      : `span ${span}`,
+    ]);
   }
 
   if (layout.position === "absolute") {

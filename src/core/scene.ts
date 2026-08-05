@@ -165,10 +165,10 @@ export function resolveDocAt(doc: SceneDocument, breakpointId: string | null): S
  * этапе компиляции, а фильтровать патч из инспектора нужно в рантайме.
  */
 export const RESPONSIVE_LAYOUT_KEYS: ReadonlySet<string> = new Set<keyof LayoutProps>([
-  "width", "height", "maxWidth", "centered",
+  "width", "height", "maxWidth", "maxHeight", "scrollX", "centered",
   "direction", "gap", "rowGap", "padding", "margin",
   "align", "justify",
-  "preset", "columns", "autoGrid", "sidebar", "gridTracks", "gridSpan",
+  "preset", "columns", "autoGrid", "sidebar", "gridTracks", "gridSpan", "gridColumn", "gridRow", "gridRowSpan",
   "wrap", "container",
 ]);
 
@@ -639,6 +639,25 @@ export function normalizeDoc(doc: SceneDocument): SceneDocument {
     }
     // сетка: пустой массив дорожек — это не сетка
     if (node.layout.gridTracks && node.layout.gridTracks.length === 0) delete node.layout.gridTracks;
+    /* Потолок высоты появился позже колонок и в старых сохранениях его нет.
+       Отсутствие = коробка растёт под содержимое, как было раньше. */
+    if (node.layout.maxHeight !== undefined) {
+      const mh = Number(node.layout.maxHeight);
+      if (Number.isFinite(mh) && mh > 0) node.layout.maxHeight = Math.round(mh);
+      else delete node.layout.maxHeight;
+    }
+    /* Горизонтальная прокрутка появилась позже: в старых сохранениях её нет,
+       и отсутствие обязано означать прежнее поведение — ряд ужимается. */
+    if (node.layout.scrollX !== undefined && node.layout.scrollX !== true) delete node.layout.scrollX;
+    /* Номер колонки появился позже: в старых сохранениях его нет, и это
+       нормально (раскладка подряд). А вот мусор из ручной правки json
+       убираем — иначе решатель уедет в отрицательные индексы. */
+    for (const key of ["gridColumn", "gridRow", "gridRowSpan"] as const) {
+      const v = node.layout[key];
+      if (v === undefined) continue;
+      if (!(Number.isFinite(v) && v >= 1)) delete node.layout[key];
+      else node.layout[key] = Math.round(v);
+    }
   }
   // выбрасываем провода, ссылающиеся на несуществующие узлы
   doc.wires = doc.wires.filter((w) => doc.nodes[w.sourceId] && doc.nodes[w.targetId]);
