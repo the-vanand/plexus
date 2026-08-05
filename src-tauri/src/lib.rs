@@ -292,6 +292,20 @@ fn kill_command(registry: State<'_, ProcRegistry>, id: u64) -> Result<(), String
 /// нечем.
 pub struct SnapRegistry(Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>);
 
+/// ПОСЛЕДНИЙ ДОСТИГНУТЫЙ ЭТАП СНИМКА, по метке окна.
+///
+/// Без этого отказ неразличим: «страница не отдала снимок» одинаково
+/// выглядит и когда права ACL не пустили вызов, и когда окно заморожено
+/// системой, и когда сайт подсунул стену антибота. Три разные причины —
+/// три разных действия, а сообщение было одно на всех.
+///
+/// Этапы приходят из самой страницы: `bridge` (мост доступен), `load`
+/// (документ загружен), `settled` (сборщик дождался шрифтов), `collected:N`
+/// (снято N узлов). Если не пришёл даже `bridge` — виноваты права или
+/// скрипт не исполнился; если пришёл `bridge`, но не `load` — окно не
+/// работает; если `collected`, но результата нет — потерялся сам ответ.
+pub struct SnapStages(Mutex<HashMap<String, String>>);
+
 static NEXT_SNAP_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Потолок на размер снимка: страница отдаёт его сама, и доверять её
@@ -306,6 +320,14 @@ fn deliver(registry: &State<'_, SnapRegistry>, label: &str, payload: String) {
     if let Some(tx) = tx {
         let _ = tx.send(payload);
     }
+}
+
+/// Страница сообщает, до какого этапа дошла. Вызывается ИЗ окна снимка.
+#[tauri::command]
+fn snapshot_stage(webview: tauri::Webview, stages: State<'_, SnapStages>, stage: String) {
+    let label = webview.label().to_string();
+    let short: String = stage.chars().take(40).collect();
+    stages.0.lock().unwrap().insert(label, short);
 }
 
 /// Страница отдаёт снимок обратно: вызывается ИЗ скрытого окна снимка.
@@ -359,6 +381,7 @@ fn snapshot_failed(
 async fn capture_snapshot(
     app: AppHandle,
     registry: State<'_, SnapRegistry>,
+    stages: State<'_, SnapStages>,
     url: String,
     collector: String,
     width: u32,
@@ -396,11 +419,21 @@ async fn capture_snapshot(
         + "      }\n"
         + "    } catch (e) { /* мост недоступен — окно закроется по таймауту */ }\n"
         + "  }\n"
+        // ЭТАПЫ. Без них отказ неразличим: права ACL, замороженное окно и
+        // стена антибота дают один и тот же таймаут. Страница сообщает, до
+        // чего дошла, и последний этап попадает в текст ошибки.
+        + "  function stage(s) { send('snapshot_stage', { stage: s }); }\n"
+        + "  stage('bridge');\n"
+        + "  if (document.readyState === 'complete') { stage('load'); }\n"
+        + "  else { window.addEventListener('load', function () { stage('load'); }, { once: true }); }\n"
         + "  Promise.resolve()\n"
         + "    .then(function () { return (\n"
         + &collector
         + "\n); })\n"
-        + "    .then(function (snap) { send('snapshot_result', { payload: JSON.stringify(snap) }); })\n"
+        + "    .then(function (snap) {\n"
+        + "      stage('collected:' + ((snap && snap.nodes && snap.nodes.length) || 0));\n"
+        + "      send('snapshot_result', { payload: JSON.stringify(snap) });\n"
+        + "    })\n"
         + "    .catch(function (e) { send('snapshot_failed', { message: String((e && e.message) || e) }); });\n"
         + "})();\n";
 
@@ -411,7 +444,14 @@ async fn capture_snapshot(
     )
     .title("Plexus: снимок страницы")
     .inner_size(width as f64, height as f64)
-    .visible(false)
+    // ЗА ПРЕДЕЛАМИ ЭКРАНА, НО ВИДИМОЕ. Скрытое окно (`visible(false)`)
+    // операционная система вправе считать невидимым и заморозить webview:
+    // таймеры не идут, раскладка не считается, сборщик не доходит до конца
+    // и снимок неизменно истекает по таймауту. Поэтому окно остаётся
+    // «видимым» для системы, но уносится далеко за границы рабочего стола.
+    .visible(true)
+    .position(-32000.0, -32000.0)
+    .skip_taskbar(true)
     .focused(false)
     // сеанс не сохраняется: чужие куки и хранилище не переживают снимок
     .incognito(true)
@@ -432,15 +472,29 @@ async fn capture_snapshot(
         .map_err(|e| e.to_string())?;
 
     registry.0.lock().unwrap().remove(&label);
+    let stage = stages.0.lock().unwrap().remove(&label);
     let _ = window.close();
 
     match result {
         Ok(payload) => Ok(payload),
-        Err(_) => Err(
-            "страница не отдала снимок за отведённое время: возможно, требует входа, \
-             блокирует автоматизацию или недоступна в регионе"
+        Err(_) => Err(match stage.as_deref() {
+            None => "снимок не начался: страница не вышла на связь. \
+                     Скорее всего мост IPC недоступен окну снимка (права ACL) \
+                     либо сайт не дал исполнить скрипт"
                 .to_string(),
-        ),
+            Some("bridge") => "страница вышла на связь, но документ так и не загрузился: \
+                               окно снимка, похоже, приостановлено системой либо сайт \
+                               не отвечает"
+                .to_string(),
+            Some("load") => "документ загрузился, но сборщик не дождался готовности \
+                             (шрифты или гидратация): попробуйте увеличить таймаут"
+                .to_string(),
+            Some(other) if other.starts_with("collected") => format!(
+                "снимок снят ({other}), но результат не дошёл до приложения: \
+                 возможно, он превысил допустимый размер"
+            ),
+            Some(other) => format!("снимок остановился на этапе «{other}»"),
+        }),
     }
 }
 
@@ -453,6 +507,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(ProcRegistry(Mutex::new(HashMap::new())))
         .manage(SnapRegistry(Mutex::new(HashMap::new())))
+        .manage(SnapStages(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![
             home_dir,
             project_root,
@@ -466,6 +521,7 @@ pub fn run() {
             kill_command,
             capture_snapshot,
             snapshot_result,
+            snapshot_stage,
             snapshot_failed
         ])
         .run(tauri::generate_context!())
