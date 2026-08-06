@@ -107,6 +107,7 @@ export function PixiCanvas({ onZoomChange }: { onZoomChange: (zoom: number) => v
           badges: c.badges,
           insertion: c.insertion,
           dragOutline: c.dragOutline,
+          marquee: c.marquee,
           gridShow: useUi.getState().gridShow,
           eyeMode: s.eyeMode,
           wireDrag: c.wireDrag,

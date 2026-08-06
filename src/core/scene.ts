@@ -3,7 +3,7 @@
  * Модуль чистый: никаких сайд-эффектов, никакого UI.
  */
 import { uid } from "./ids";
-import { deg2rad, rotateAround } from "./geometry";
+import { deg2rad, rectContains, rectsIntersect, rotateAround, rotatedBounds } from "./geometry";
 import { DEFAULT_THEME, type ThemeSpec } from "./themes";
 import type {
   Breakpoint, LayoutProps, NodeType, PaddingValue, Rect, SceneDocument, SceneNode, Sides, StyleProps,
@@ -471,6 +471,65 @@ export function findDeepestAt(
     if (found) return found;
   }
   return null;
+}
+
+/**
+ * УЗЛЫ, ПОПАВШИЕ В РАМКУ ВЫДЕЛЕНИЯ (мировые координаты).
+ *
+ * Правило попадания намеренно разное для листьев и контейнеров:
+ *
+ *  - лист (текст, кнопка, картинка…) попадает по ПЕРЕСЕЧЕНИЮ — так работает
+ *    рамка на рабочем столе, и так удобнее: не нужно аккуратно накрывать
+ *    длинный заголовок целиком;
+ *  - контейнер с детьми (страница, секция, карточка) попадает только при
+ *    ПОЛНОМ НАКРЫТИИ. Иначе любая протяжка внутри страницы выделяла бы саму
+ *    страницу — ведь рамка всегда пересекает её фон, — и вместе с ней всё
+ *    содержимое. Пустой контейнер детей не имеет и ведёт себя как лист,
+ *    иначе его нельзя было бы поймать рамкой вовсе.
+ *
+ * Выделяется САМЫЙ ВНЕШНИЙ подходящий узел: накрыли карточку — получили
+ * карточку, а не её заголовок с картинкой по отдельности. Внутрь частично
+ * задетого контейнера спускаемся и собираем то, что задето там.
+ */
+export function collectInMarquee(
+  doc: SceneDocument,
+  rects: Map<string, Rect>,
+  marquee: Rect,
+): string[] {
+  const out: string[] = [];
+  const visit = (id: string): void => {
+    const node = doc.nodes[id];
+    if (!node) return;
+    const r = rects.get(id);
+    // собственный поворот узла учитываем через осевой габарит
+    const box = r ? rotatedBounds(r, deg2rad(node.layout.rotation || 0)) : null;
+    if (box && rectsIntersect(marquee, box)) {
+      const openContainer = isContainerLike(node) && node.children.length > 0;
+      if (!openContainer || rectContains(marquee, box)) {
+        out.push(id);
+        return; // потомки уже внутри выбранного узла — по отдельности не берём
+      }
+    }
+    // ВАЖНО: дети проверяются, даже если родитель не задет, — как в
+    // findDeepestAt: элемент, вылезший за пределы родителя, ловится рамкой
+    for (const childId of node.children) visit(childId);
+  };
+  for (const frameId of doc.rootFrames) visit(frameId);
+  return out;
+}
+
+/** Как рамка сочетается с текущим выделением (модификатор задаётся в начале жеста). */
+export type MarqueeMode = "replace" | "add" | "subtract";
+
+/** Слияние результата рамки с выделением, которое было до начала протяжки. */
+export function mergeSelection(base: string[], hits: string[], mode: MarqueeMode): string[] {
+  if (mode === "replace") return hits;
+  if (mode === "add") {
+    const have = new Set(base);
+    return [...base, ...hits.filter((id) => !have.has(id))];
+  }
+  const drop = new Set(hits);
+  return base.filter((id) => !drop.has(id));
 }
 
 /** Глубокое клонирование поддерева с новыми id (для Ctrl+D). */

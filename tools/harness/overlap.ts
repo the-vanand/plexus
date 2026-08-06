@@ -9,6 +9,15 @@
  * ПОСЧИТАННОЙ раскладке прямоугольники пересекаются заметной площадью, а в
  * ИЗМЕРЕННОМ снимке — нет. То есть это наша ошибка, а не свойство страницы.
  *
+ * ПРОВЕРЯЮТСЯ ВСЕ УЗЛЫ, А НЕ ТОЛЬКО ТЕКСТОВЫЕ. Первая версия смотрела лишь
+ * на текст и потому давала ноль там, где пользователь глазом видел
+ * наложение: на странице YouTube друг на друга наезжали кнопки и
+ * контейнеры-пилюли, а надписи внутри них стояли верно. Слепое пятно
+ * прибора — худший род слепоты, потому что выглядит как хорошая новость.
+ *
+ * Вложенные узлы исключаются: ребёнок внутри родителя пересекается с ним по
+ * определению, и это не дефект.
+ *
  *   npx tsx tools/harness/overlap.ts fixtures/snapshots/<имя>.json
  */
 import { readFileSync } from "node:fs";
@@ -42,8 +51,17 @@ const frame = doc.nodes[out.frameId]!;
 
 interface Box { id: string; text: string; x: number; y: number; w: number; h: number; sx: number; sy: number; sw: number; sh: number }
 const boxes: Box[] = [];
+/** Предки узла — чтобы не считать наложением ребёнка внутри родителя. */
+const parentOf = new Map<string, string | null>();
+for (const node of Object.values(doc.nodes)) parentOf.set(node.id, node.parent ?? null);
+const isAncestor = (a: string, b: string): boolean => {
+  let p = parentOf.get(b) ?? null;
+  while (p) { if (p === a) return true; p = parentOf.get(p) ?? null; }
+  return false;
+};
+
 for (const node of Object.values(doc.nodes)) {
-  if (!node.text) continue;
+  if (node.type === "frame") continue;
   const r = rects.get(node.id);
   const idx = out.trace?.get(node.id);
   if (!r || idx === undefined) continue;
@@ -51,7 +69,7 @@ for (const node of Object.values(doc.nodes)) {
   if (!s || s.r[2] <= 1 || s.r[3] <= 1) continue;
   boxes.push({
     id: node.id,
-    text: (node.text ?? "").slice(0, 28).replace(/\n/g, "⏎"),
+    text: (node.text ?? `<${node.type}>`).slice(0, 28).replace(/\n/g, "⏎"),
     x: r.x - frame.layout.x, y: r.y - frame.layout.y, w: r.w, h: r.h,
     sx: s.r[0], sy: s.r[1], sw: s.r[2], sh: s.r[3],
   });
@@ -70,6 +88,7 @@ for (let i = 0; i < boxes.length; i += 1) {
   for (let j = i + 1; j < boxes.length; j += 1) {
     const a = boxes[i], b = boxes[j];
     if (b.y > a.y + a.h) break;
+    if (isAncestor(a.id, b.id) || isAncestor(b.id, a.id)) continue;
     const ours = areaOurs(a, b);
     if (ours <= 0) continue;
     const src = areaSrc(a, b);
@@ -80,7 +99,7 @@ for (let i = 0; i < boxes.length; i += 1) {
 }
 
 console.log(`\n▸ НАЛОЖЕНИЯ — ${basename(path)}`);
-console.log(`  текстовых узлов сверено   ${boxes.length}`);
+console.log(`  узлов сверено             ${boxes.length}`);
 console.log(`  наложений (у нас есть, в оригинале нет)  ${bad.length}`);
 if (bad.length) {
   console.log(`\n  ХУДШИЕ:`);
