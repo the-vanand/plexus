@@ -325,21 +325,56 @@ function cssForNode(node: SceneNode, parent: SceneNode | null, theme: ResolvedTh
      наружу. Пара «max-height + overflow:auto» и есть прокручиваемая коробка. */
   if (layout.maxHeight !== undefined) {
     d.push(["max-height", `${Math.round(layout.maxHeight)}px`]);
-    d.push(["overflow", "auto"]);
+    /* У обрезанного многоточием узла прокрутка была бы неправдой: браузер
+       содержимое СРЕЗАЛ, а не спрятал под скроллбар. */
+    if (!layout.ellipsis) d.push(["overflow", "auto"]);
   }
   /* Строка, которую оригинал не переносил (см. `LayoutProps.noWrap`): в
      экспорте это ровно `white-space: nowrap`, иначе экспорт разошёлся бы с
      холстом на лишнюю строку. */
   if (layout.noWrap) d.push(["white-space", "nowrap"]);
+  /* Усечение многоточием — это ровно тройка свойств, и она выразима в CSS
+     один в один (см. `LayoutProps.ellipsis`). `white-space: nowrap` уже
+     стоит выше: обрезка без него потеряла бы смысл — текст перенёсся бы. */
+  if (layout.ellipsis) {
+    d.push(["overflow", "hidden"]);
+    d.push(["text-overflow", "ellipsis"]);
+    if (!layout.noWrap) d.push(["white-space", "nowrap"]);
+  }
   // лента с горизонтальной прокруткой: не переносится и не сжимается
   if (layout.scrollX) {
     d.push(["overflow-x", "auto"]);
     d.push(["flex-wrap", "nowrap"]);
   }
-  const mg = layout.margin;
-  if (mg && (mg.t || mg.r || mg.b || mg.l)) {
-    d.push(["margin", `${mg.t}px ${layout.centered ? "auto" : `${mg.r}px`} ${mg.b}px ${layout.centered ? "auto" : `${mg.l}px`}`]);
-  } else if (layout.centered) d.push(["margin-inline", "auto"]);
+  /**
+   * ВЫЧИСЛЕННЫЙ ОТСТУП ВЫВОДИТСЯ ПОСЛЕ СБРОСА БРАУЗЕРНОГО, А НЕ ДО.
+   *
+   * `<p>`, `<ul>`, `<hr>`, `<blockquote>` приходят с отступом от таблицы
+   * стилей браузера, и модель его снимает: `margin: 0`. Но этот сброс
+   * попадал в тот же список объявлений ПОСЛЕ вычисленного отступа и по
+   * каскаду побеждал — то есть экспорт терял КАЖДЫЙ отступ у надписи.
+   * А именно отступом выражен просвет между строчными соседями
+   * (`noteInlineLead`): пробел разметки между двумя `<a>` не описан ни
+   * одним свойством, он измерен и записан левым отступом. На импорте
+   * страницы GitHub так обнулялись 79 отступов из 79, и в сгенерированной
+   * странице строка слипалась в «Merge pull request#16from the-vanand/…»,
+   * хотя на холсте она стояла верно.
+   *
+   * Порядок здесь единственное, что менялось: оба объявления как были, так
+   * и остаются (сброс нужен и при своём отступе — он снимает браузерные
+   * поля по осям, которых модель не задаёт), поменялась только их
+   * очередь, и теперь по каскаду побеждает измеренное значение.
+   */
+  const emitMargin = (): void => {
+    const mg = layout.margin;
+    if (mg && (mg.t || mg.r || mg.b || mg.l)) {
+      d.push(["margin", `${mg.t}px ${layout.centered ? "auto" : `${mg.r}px`} ${mg.b}px ${layout.centered ? "auto" : `${mg.l}px`}`]);
+    } else if (layout.centered) d.push(["margin-inline", "auto"]);
+  };
+  /** Сброс браузерного отступа у тегов, которые его несут по умолчанию. */
+  const resetMargin = (): void => {
+    d.push(["margin", "0"]);
+  };
   if (layout.gridSpan !== undefined || layout.gridColumn !== undefined) {
     const span = layout.gridSpan === "full" ? null : Math.max(1, layout.gridSpan ?? 1);
     const start = layout.gridColumn;
@@ -390,7 +425,7 @@ function cssForNode(node: SceneNode, parent: SceneNode | null, theme: ResolvedTh
   if (style.radius > 0) d.push(["border-radius", `${style.radius}px`]);
 
   if (node.type === "text") {
-    d.push(["margin", "0"]);
+    resetMargin();
     // `<br>` из исходника хранится как \n в тексте узла; без pre-line
     // HTML схлопнет его в пробел и заголовок склеится в одну строку
     if ((node.text ?? "").includes("\n")) d.push(["white-space", "pre-line"]);
@@ -479,7 +514,7 @@ function cssForNode(node: SceneNode, parent: SceneNode | null, theme: ResolvedTh
     // <hr> со снятыми браузерными стилями: линию рисует border
     d.push(["border", "none"]);
     d.push(["border-top", `${style.borderWidth ?? 1}px solid ${cssColor(style.borderColor ?? "$line")}`]);
-    d.push(["margin", "0"]);
+    resetMargin();
     d.push(["width", "100%"]);
   }
   if (node.type === "spacer") {
@@ -487,7 +522,7 @@ function cssForNode(node: SceneNode, parent: SceneNode | null, theme: ResolvedTh
     d.push(["pointer-events", "none"]);
   }
   if (node.type === "list") {
-    d.push(["margin", "0"]);
+    resetMargin();
     d.push(["padding-left", `${Math.round(style.fontSize * 1.4)}px`]);
     d.push(["display", "flex"]);
     d.push(["flex-direction", "column"]);
@@ -497,7 +532,7 @@ function cssForNode(node: SceneNode, parent: SceneNode | null, theme: ResolvedTh
     if (style.lineHeight) d.push(["line-height", `${style.lineHeight}`]);
   }
   if (node.type === "quote") {
-    d.push(["margin", "0"]);
+    resetMargin();
     d.push(["font-size", `${style.fontSize}px`]);
     d.push(["color", cssColor(style.textColor)]);
     if (style.italic) d.push(["font-style", "italic"]);
@@ -534,6 +569,10 @@ function cssForNode(node: SceneNode, parent: SceneNode | null, theme: ResolvedTh
   if (node.type === "cmslist") {
     d.push(["display", "flex"], ["flex-direction", "column"], ["gap", "12px"]);
   }
+
+  /* Вычисленный отступ — ПОСЛЕДНИМ, чтобы сброс браузерного его не стирал
+     (см. `emitMargin`). */
+  emitMargin();
 
   return d;
 }
@@ -684,6 +723,20 @@ function embedSrc(node: SceneNode): string {
 const esc = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+/**
+ * ТЕКСТ ЭЛЕМЕНТА: КРАЕВОЙ ПРОБЕЛ ЗНАЧИМ, А HTML ЕГО СХЛОПЫВАЕТ.
+ *
+ * Кусок собственного текста родителя стоит на одной строке с соседями, и
+ * пробел на его краю — содержимое, а не форматирование (см. `addOwnText` в
+ * импорте). В разметке такой пробел на границе элемента исчезает по общему
+ * правилу схлопывания, поэтому в экспорт он уходит неразрывным: это ровно
+ * тот же глиф той же ширины, но схлопыванию он не подлежит.
+ *
+ * `white-space: pre-wrap` решил бы то же самое, но он спорит с `nowrap`,
+ * который на однострочных надписях ставится по измеренному факту.
+ */
+const escText = (s: string): string => esc(s).replace(/^ /, "&nbsp;").replace(/ $/, "&nbsp;");
+
 /* ------------------------------------------------------------------ */
 /* Проект целиком                                                      */
 /* ------------------------------------------------------------------ */
@@ -827,7 +880,7 @@ export function generateProject(doc: SceneDocument, siteName = "Plexus Site"): G
     }
     if (node.type === "text" || node.type === "button") {
       const hrefAttr = tag === "a" ? ` href="${esc(node.href ?? "#")}"` : "";
-      return `${pad}<${tag} class="${cls}" ${anchor}${hrefAttr}>${esc(node.text ?? "")}</${tag}>`;
+      return `${pad}<${tag} class="${cls}" ${anchor}${hrefAttr}>${escText(node.text ?? "")}</${tag}>`;
     }
     const children = node.children.map((c) => renderNode(c, depth + 1, frameId)).join("\n");
     return `${pad}<${tag} class="${cls}" ${anchor}>\n${children}\n${pad}</${tag}>`;
@@ -1295,7 +1348,7 @@ function generateNextProject(
     if (node.type === "text" || node.type === "button") {
       const tag = tagFor(node);
       const hrefAttr = tag === "a" ? ` href="${esc(node.href ?? "#")}"` : "";
-      return `${pad}<${tag} className="${cls}" ${anchor}${hrefAttr}>${esc(node.text ?? "")}</${tag}>`;
+      return `${pad}<${tag} className="${cls}" ${anchor}${hrefAttr}>${escText(node.text ?? "")}</${tag}>`;
     }
     const tag = node.type === "frame" ? "main" : "div";
     const children = node.children.map((c) => renderJsx(c, depth + 1, frameId)).join("\n");
