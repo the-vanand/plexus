@@ -332,9 +332,21 @@ function importSnapshotToDocInner(
    *
    * Схлопнутая коробка сама по себе НЕ обрезана: обрезать нечего. Судить о
    * ней надо по положению точки, а не по краям, которых нет.
+   *
+   * ВЫРОЖДЕННОЕ ОКНО ОБРЕЗКИ РЕЖЕТ ВСЁ. Проверка «целиком за краем»
+   * пропускала содержимое, ПЕРЕСЕКАЮЩЕЕ нулевое окно: у кнопки подписки
+   * YouTube Lottie-анимация 51px лежит в коробке `overflow: hidden`
+   * высотой 0 — браузер не показывает из неё ни пикселя, а импорт ставил
+   * её в поток живым блоком, и она накрывала соседние кнопки (все 96
+   * наложений на yt-watch — этот один узел). Поэтому судим не по краям,
+   * а по ВИДИМОЙ ПОЛОСЕ: если внутри окна остаётся ≤1px, содержимого на
+   * странице нет. Для коробки целиком за краем полоса отрицательна —
+   * прежние случаи под это же правило и попадают.
    */
   const outsideAxis = (lo: number, size: number, c0: number, c1: number): boolean =>
-    size > 1 ? lo + size <= c0 + 1 || lo >= c1 - 1 : lo < c0 - 1 || lo > c1 + 1;
+    size > 1
+      ? Math.min(lo + size, c1) - Math.max(lo, c0) <= 1
+      : lo < c0 - 1 || lo > c1 + 1;
 
   const outsideClip = (n: SnapNode, clip: Clip): boolean =>
     outsideAxis(n.r[0], n.r[2], clip.x0, clip.x1) || outsideAxis(n.r[1], n.r[3], clip.y0, clip.y1);
@@ -1407,20 +1419,22 @@ function importSnapshotToDocInner(
    * Центрирование заменяет только БОКОВЫЕ отступы (это `margin-inline: auto`),
    * а раньше вместе с ними стирались и вертикальные.
    *
-   * Вернуть их можно не везде: в блочном потоке соседние вертикальные
-   * отступы СХЛОПЫВАЮТСЯ, и измеренные прямоугольники уже это учли —
-   * решатель же складывает их подряд, поэтому вернуть отступ значило бы
-   * посчитать его дважды. Во flex и grid схлопывания нет по спецификации,
-   * там отступ настоящий и держит ритм страницы: на astro.build секции
-   * лежат во flex-колонке с `margin-top: 144px`, и без него страница
-   * недосчитывалась 1150px из 8841.
+   * Вертикальные отступы сохраняются ВЕЗДЕ, а не только во flex и grid.
+   * Раньше в блочном родителе они стирались целиком — из страха двойного
+   * счёта при схлопывании. Но двойной счёт уже исключён ДРУГИМИ правилами,
+   * работающими по измеренным просветам: `applyMargins` подрезает отступ
+   * крайнего ребёнка до измеренного зазора, а `collapseVerticalMargins`
+   * съедает перекрытие соседних пар. Стирание же теряло НАСТОЯЩИЙ отступ:
+   * на yt-watch плашка описания (`margin: 12px`, центрирована боковыми
+   * 12px) — первый ребёнок flex-item'а, где схлопывания нет вовсе; её
+   * margin-top исчезал, вся ветка вставала на 12px выше соседней, и
+   * Lottie-узел кнопки подписки накрывал строку «#RickAstley».
    */
   const dropSideMargins = (node: SceneNode, parent: SnapNode | null): void => {
+    void parent;
     const m = node.layout.margin;
     if (!m) return;
-    const pd = (parent?.s["display"] ?? "").trim();
-    const collapses = !pd.includes("flex") && !pd.includes("grid");
-    if (!collapses && (m.t || m.b)) node.layout.margin = { t: m.t, r: 0, b: m.b, l: 0 };
+    if (m.t || m.b) node.layout.margin = { t: m.t, r: 0, b: m.b, l: 0 };
     else delete node.layout.margin;
   };
 
@@ -2035,14 +2049,34 @@ function importSnapshotToDocInner(
    */
   const applyPosition = (node: SceneNode, n: SnapNode, parent: SnapNode | null): void => {
     const pos = (n.s["position"] ?? "static").trim();
-    if (pos === "sticky" && !outOfFlow(n)) {
+
+    /* РЕБЁНОК ВЫРОЖДЕННОГО ABSOLUTE-РОДИТЕЛЯ НЕ РАСКЛАДЫВАЕТСЯ ПОТОКОМ.
+       У кнопки подписки YouTube Lottie-анимация лежит в absolute-коробке
+       `display: flex; align-items: center` ВЫСОТОЙ 0: браузер центрирует
+       ребёнка НА нулевой линии, и измеренный ребёнок начинается на 25px
+       ВЫШЕ родителя. Наша модель отрицательных смещений потока не знает
+       и клала ребёнка от верха — дифференциальный сдвиг против соседей
+       давал наложения (на yt-watch — все до единого). Флоу внутри коробки
+       без высоты — фикция; честно одно: прибить ребёнка по измеренной
+       разнице прямоугольников, как это уже делается для float.
+       В ПОТОК правило не вмешивается: родитель обязан быть сам вне потока
+       (обёртки плавающих колонок gnu.org и приложений bandcamp остаются
+       рядами — они в потоке, `flowBack`/`floatRow` про них уже решили). */
+    const degenerateHost =
+      !outOfFlow(n) &&
+      parent !== null &&
+      outOfFlow(parent) &&
+      parent.r[3] <= 1 &&
+      n.r[3] > 1;
+
+    if (pos === "sticky" && !outOfFlow(n) && !degenerateHost) {
       // sticky ОСТАЁТСЯ в потоке: место за ним резервируется браузером
       node.sticky = true;
       const solid = snapColor(n.s["background-color"]);
       if (solid && solid.alpha > 0) node.scrollFill = solid.hex;
       return;
     }
-    if (!outOfFlow(n)) return;
+    if (!outOfFlow(n) && !degenerateHost) return;
 
     /* `fixed` — тоже ВНЕ потока, и это не мелочь. Раньше он лишь помечался
        закреплённым и продолжал занимать строку: закреплённая шапка добавляла
@@ -2274,6 +2308,7 @@ function importSnapshotToDocInner(
       collapsed += 1;
       return;
     }
+
     const inner = clipOf(n, clip, idx);
 
     /* Текст только для скринридеров: коробка схлопнута в 1px и обрезана
