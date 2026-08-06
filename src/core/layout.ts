@@ -92,7 +92,7 @@ export function computeLayout(
       fontFor(node),
       /* `noWrap` — это `white-space: nowrap`: переноса нет, и ширина
          обёртки на высоту не влияет вовсе (см. LayoutProps.noWrap). */
-      node.layout.noWrap ? undefined : Math.max(24, maxW),
+      node.layout.noWrap ? undefined : Math.max(24, maxW - (node.layout.wrapInset ?? 0)),
       textExtra(node),
     ).h;
 
