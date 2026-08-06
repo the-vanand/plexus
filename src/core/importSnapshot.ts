@@ -667,6 +667,69 @@ function importSnapshotToDocInner(
     return isFloat(n) && !floatRow.has(n);
   };
 
+  /**
+   * ОБТЕКАНИЕ: ТЕКСТ УКОРАЧИВАЕТ СТРОКИ, А НЕ КОРОБКУ.
+   *
+   * Плавающий блок выведен из потока (см. `isFloat`), и мы ставим его туда,
+   * где его измерил браузер. Но соседям по потоку он всё равно мешает —
+   * не коробкой, а СТРОКАМИ: коробка абзаца остаётся полной ширины, а
+   * строки внутри укорачиваются на просвет до флоата. Этого модель не
+   * воспроизводила вовсе, и абзацы выходили ниже настоящих: статья
+   * ru.wikipedia.org/wiki/Airbnb с инфобоксом 331px справа теряла по две
+   * строки на абзаце, весь текст ниже уезжал вверх на 222px и оказывался
+   * ПОД карточкой — 23 наложения, которых в оригинале нет.
+   *
+   * Заход считается по ИЗМЕРЕННОЙ геометрии и только там, где он
+   * действительно есть: плавающий блок обязан пересекаться с коробкой
+   * соседа и по вертикали, и по горизонтали. Если сосед стоит СБОКУ
+   * (двухколоночная плавающая вёрстка), пересечения по горизонтали нет, и
+   * правило молчит — ряды `floatRow` оно не трогает по построению.
+   *
+   * Доля высоты нужна потому, что укорачиваются не все строки: абзац,
+   * задетый флоатом на треть высоты, теряет треть длины строк. Ровно это и
+   * есть средняя ширина строки, а от неё — число строк.
+   */
+  const wrapInset = new Map<number, number>();
+  {
+    const floaters: number[] = [];
+    snap.nodes.forEach((n, i) => {
+      if (n.r[2] > 1 && n.r[3] > 1 && isFloat(n) && !floatRow.has(n)) floaters.push(i);
+    });
+    if (floaters.length > 0) {
+      /* Предок ли `a` для `b` — плавающий блок ВНУТРИ абзаца обтекается его
+         собственными строками (это законный случай), а вот содержимое
+         самого флоата укорачивать нечем. */
+      const isAncestor = (a: number, b: number): boolean => {
+        for (let p = snap.nodes[b].p; p >= 0; p = snap.nodes[p].p) if (p === a) return true;
+        return false;
+      };
+      snap.nodes.forEach((b, bi) => {
+        if (b.r[2] <= 1 || b.r[3] <= 1) return;
+        if (outOfFlow(b)) return;
+        let eatL = 0;
+        let eatR = 0;
+        for (const fi of floaters) {
+          if (fi === bi || isAncestor(fi, bi)) continue;
+          const f = snap.nodes[fi];
+          const ov = Math.min(f.r[1] + f.r[3], b.r[1] + b.r[3]) - Math.max(f.r[1], b.r[1]);
+          if (ov <= 2) continue;
+          const share = Math.min(1, ov / b.r[3]);
+          const side = (f.s["float"] ?? "").trim();
+          if (side === "right" || side === "inline-end") {
+            const cut = b.r[0] + b.r[2] - f.r[0];
+            if (cut > 2 && f.r[0] > b.r[0] + 2) eatR = Math.max(eatR, cut * share);
+          } else {
+            const cut = f.r[0] + f.r[2] - b.r[0];
+            if (cut > 2 && f.r[0] + f.r[2] < b.r[0] + b.r[2] - 2) eatL = Math.max(eatL, cut * share);
+          }
+        }
+        const total = Math.round(eatL + eatR);
+        // просвет уже коробки не бывает, а мелочь ниже строки ничего не решает
+        if (total >= 8 && total < b.r[2] - 40) wrapInset.set(bi, total);
+      });
+    }
+  }
+
   /** Индексы детей в потоке: absolute, fixed и float браузер из него вывел. */
   const flowKidIdx = (idx: number): number[] =>
     (kids.get(idx) ?? []).filter((c) => !outOfFlow(snap.nodes[c]));
@@ -2429,6 +2492,11 @@ function importSnapshotToDocInner(
       }
       const pad = sides(n, "padding");
       if (pad.t || pad.r || pad.b || pad.l) node.layout.padding = packPadding(pad);
+      /* СТРОКИ, УКОРОЧЕННЫЕ ОБТЕКАНИЕМ, — см. `wrapInset` выше. Коробка
+         остаётся полной ширины (она такой и измерена), уже становится
+         только перенос. */
+      const inset = wrapInset.get(idx);
+      if (inset !== undefined && !node.layout.noWrap) node.layout.wrapInset = inset;
       applyMargins(node, n, parentSnap, idx);
       // ширину берём измеренную как потолок: перенос строк совпадёт с оригиналом
       node.layout.width = "fill";
