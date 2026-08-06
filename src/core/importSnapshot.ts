@@ -3498,19 +3498,40 @@ function importSnapshotToDocInner(
        коробки, но там лишнее уходит на следующую строку, а не под
        прокрутку. Видно это по измеренным верхним краям — у переноса их
        больше одного. */
-    if (ch.length < 2) return false;
+    /* СХЛОПНУТЫЕ КОРОБКИ В ПРИЗНАКЕ НЕ УЧАСТВУЮТ. У ytd-app между
+       настоящими блоками лежат порталы-заглушки 1440×0: видимой ширины
+       у них нет, а в сумму ширин они входили полноразмерно — и сумма
+       «переполняла» коробку там, где на странице ровно один столбик. */
+    const real = ch.filter((c) => c.r[2] > 1 && c.r[3] > 0);
+    if (real.length < 2) return false;
     if ((n.s["flex-wrap"] ?? "").includes("wrap")) return false;
-    const tops: number[] = [];
-    for (const c of ch) {
-      if (c.r[3] <= 0) continue;
-      if (!tops.some((t) => Math.abs(t - c.r[1]) <= Math.max(4, c.r[3] * 0.5))) tops.push(c.r[1]);
+    /* «ОДНА СТРОКА» — ЭТО ВЕРТИКАЛЬНОЕ ПЕРЕКРЫТИЕ, А НЕ БЛИЗОСТЬ ВЕРХОВ.
+       Допуск сравнения верхних краёв масштабировался ПОЛОВИНОЙ ВЫСОТЫ
+       ребёнка: у контента github.com высотой 10 496px это 5 248px, и
+       столбик «шапка над контентом» сходил за одну строку. Дальше сумма
+       ширин двух полноширинных блоков (1440 + 1440 > 1440) делала из
+       столбика «карусель», и rowChildWidth замораживал детям ширины —
+       страница переставала следить за шириной рамки (отзывчивых узлов
+       на gh-plexus 2%, на yt-watch 0%). Пользователь видит это как
+       «объекты не привязаны к окну страницы: меняешь ширину — ничего
+       не происходит».
+       Признак измеренный: ребёнок, начинающийся НИЖЕ НИЗА уже собранной
+       строки (допуск 4px на округление), открывает вторую строку — а
+       больше одной строки бывает у столбиков и переносов, но не у лент.
+       Слайды карусели, спрятанные под видимым (у Swiper все измерены
+       одним прямоугольником), перекрываются целиком и остаются одной
+       строкой, как и ряд разновысоких коробок с выравниванием. */
+    const lined = [...real].sort((a, b) => a.r[1] - b.r[1]);
+    let lineBottom = -Infinity;
+    for (const c of lined) {
+      if (lineBottom !== -Infinity && c.r[1] >= lineBottom - 4) return false;
+      lineBottom = Math.max(lineBottom, c.r[1] + c.r[3]);
     }
-    if (tops.length > 1) return false;
     const pad = sides(n, "padding");
     const innerW =
       n.r[2] - pad.l - pad.r - snapPx(n.s["border-left-width"]) - snapPx(n.s["border-right-width"]);
-    let sum = Math.round(snapPx(n.s["column-gap"]) || 0) * (ch.length - 1);
-    for (const c of ch) {
+    let sum = Math.round(snapPx(n.s["column-gap"]) || 0) * (real.length - 1);
+    for (const c of real) {
       sum += c.r[2] + Math.max(0, snapPx(c.s["margin-left"])) + Math.max(0, snapPx(c.s["margin-right"]));
     }
     return sum > innerW + 4;
@@ -3806,7 +3827,19 @@ function importSnapshotToDocInner(
       if (wl.margin && !cl.margin) cl.margin = wl.margin;
       else if (wl.margin && cl.margin) continue; // оба с отступами — не рискуем
       if (wl.centered) cl.centered = true;
-      if (typeof wl.width === "number" && typeof cl.width !== "number") cl.width = wl.width;
+      /* Числовая ширина переезжает к ребёнку, только если обёртка
+         действительно УЖЕ родителя. Полноширинная числовая ширина
+         эквивалентна fill по геометрии, но мертва: она не следит за
+         рамкой. Оставляя ребёнку fill, ничего не теряем. */
+      if (typeof wl.width === "number" && typeof cl.width !== "number") {
+        const wi = snapIdxOf.get(w.id);
+        const pi = snapIdxOf.get(parent.id);
+        const narrower =
+          wi !== undefined && pi !== undefined
+            ? snap.nodes[wi].r[2] < snap.nodes[pi].r[2] - 2
+            : true;
+        if (narrower) cl.width = wl.width;
+      }
       if (typeof wl.height === "number" && typeof cl.height !== "number") cl.height = wl.height;
       if (wl.maxWidth !== undefined && cl.maxWidth === undefined) cl.maxWidth = wl.maxWidth;
       if (wl.maxHeight !== undefined && cl.maxHeight === undefined) cl.maxHeight = wl.maxHeight;
