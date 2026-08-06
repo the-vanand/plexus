@@ -150,6 +150,9 @@ function importSnapshotToDocInner(
   let collapsed = 0;
   let added = 0;
   const trace = opts.trace ? new Map<string, number>() : undefined;
+  /** Индекс снимка для каждого узла сцены — нужен упрощению дерева,
+      поэтому ведётся всегда, а не только при `opts.trace`. */
+  const snapIdxOf = new Map<string, number>();
 
   /** Дети каждого узла снимка. */
   const kids = new Map<number, number[]>();
@@ -3515,6 +3518,7 @@ function importSnapshotToDocInner(
 
   function attach(node: SceneNode, parentId: string, _n: SnapNode, idx?: number): void {
     if (trace && idx !== undefined) trace.set(node.id, idx);
+    if (idx !== undefined) snapIdxOf.set(node.id, idx);
     node.parent = parentId;
     doc.nodes[node.id] = node;
     doc.nodes[parentId]!.children.push(node.id);
@@ -3730,6 +3734,94 @@ function importSnapshotToDocInner(
       `Восстановлено ${added} узлов из ${snap.nodes.length} (${Math.round(shareKept * 100)}%): часть страницы не перенеслась`,
     );
   }
+
+  /* УПРОЩЕНИЕ ДЕРЕВА: страница должна быть УДОБНА ДЛЯ ПРАВКИ, а не только
+     точна. DOM живых сайтов набит служебной обвязкой — веб-компоненты
+     YouTube дают цепочки div > toggle > button-view-model по 5–7 слоёв
+     с одним ребёнком и БЕЗ собственного вида. Геометрию они не меняют
+     (коробка та же, что у ребёнка), а в панели слоёв превращают каждую
+     кнопку в матрёшку: на yt-watch таких обёрток 695 из 2459 узлов,
+     медианная глубина дерева 19. Пользователь называет это «дубли
+     существуют, просто их не видно — неудобно редактировать».
+
+     Правило разворачивания консервативно, судит по ИЗМЕРЕННОМУ снимку:
+      - у обёртки ровно один ребёнок, и их прямоугольники совпадают (±2px);
+      - обёртка ничего не рисует: ни фона, ни рамки, ни картинки, ни
+        текста — и не несёт поведения (sticky, прокрутка, накладка);
+      - оба в потоке: absolute-цепочки не трогаем, там позиция — смысл.
+     Поля раскладки, которых у ребёнка нет (margin, ширина/высота,
+     центрирование), переезжают к нему — место обёртки в потоке родителя
+     занимает он сам. Пустой absolute-лист без вида удаляется целиком:
+     потока он не двигает, а на холсте это невидимая рамка-ловушка. */
+  const blandWrapper = (w: SceneNode): boolean => {
+    if (w.type !== "container" || w.children.length !== 1) return false;
+    if (w.text || w.src || w.items?.length || w.iconName || w.videoProvider) return false;
+    if (w.sticky || w.scrollFill || w.layout.scrollX) return false;
+    if (w.layout.position === "absolute") return false;
+    const s = w.style;
+    if (s.fill && s.fill !== "transparent" && (s.fillAlpha ?? 1) > 0) return false;
+    if (s.backgroundImage || s.backgroundGradient) return false;
+    if ((s.borderWidth ?? 0) > 0) return false;
+    if ((s.opacity ?? 1) < 1) return false;
+    const c = doc.nodes[w.children[0]];
+    if (!c || c.layout.position === "absolute") return false;
+    const wi = snapIdxOf.get(w.id);
+    const ci = snapIdxOf.get(c.id);
+    if (wi === undefined || ci === undefined) return false;
+    const a = snap.nodes[wi].r;
+    const b = snap.nodes[ci].r;
+    return (
+      Math.abs(a[0] - b[0]) <= 2 && Math.abs(a[1] - b[1]) <= 2 &&
+      Math.abs(a[2] - b[2]) <= 2 && Math.abs(a[3] - b[3]) <= 2
+    );
+  };
+  const emptyFloater = (w: SceneNode): boolean => {
+    if (w.type !== "container" || w.children.length > 0) return false;
+    if (w.text || w.src || w.items?.length || w.iconName || w.videoProvider) return false;
+    if (w.sticky || w.scrollFill) return false;
+    if (w.layout.position !== "absolute") return false;
+    const s = w.style;
+    if (s.fill && s.fill !== "transparent" && (s.fillAlpha ?? 1) > 0) return false;
+    if (s.backgroundImage || s.backgroundGradient) return false;
+    if ((s.borderWidth ?? 0) > 0) return false;
+    return true;
+  };
+  let simplified = 0;
+  for (let pass = 0; pass < 12; pass += 1) {
+    let changed = 0;
+    for (const w of Object.values(doc.nodes)) {
+      if (!w.parent || !doc.nodes[w.parent]) continue;
+      const parent = doc.nodes[w.parent]!;
+      if (emptyFloater(w)) {
+        parent.children = parent.children.filter((id) => id !== w.id);
+        delete doc.nodes[w.id];
+        trace?.delete(w.id);
+        changed += 1;
+        continue;
+      }
+      if (!blandWrapper(w)) continue;
+      const c = doc.nodes[w.children[0]]!;
+      const wl = w.layout;
+      const cl = c.layout;
+      if (wl.margin && !cl.margin) cl.margin = wl.margin;
+      else if (wl.margin && cl.margin) continue; // оба с отступами — не рискуем
+      if (wl.centered) cl.centered = true;
+      if (typeof wl.width === "number" && typeof cl.width !== "number") cl.width = wl.width;
+      if (typeof wl.height === "number" && typeof cl.height !== "number") cl.height = wl.height;
+      if (wl.maxWidth !== undefined && cl.maxWidth === undefined) cl.maxWidth = wl.maxWidth;
+      if (wl.maxHeight !== undefined && cl.maxHeight === undefined) cl.maxHeight = wl.maxHeight;
+      const at = parent.children.indexOf(w.id);
+      if (at < 0) continue;
+      parent.children[at] = c.id;
+      c.parent = parent.id;
+      delete doc.nodes[w.id];
+      trace?.delete(w.id);
+      changed += 1;
+    }
+    simplified += changed;
+    if (changed === 0) break;
+  }
+  added -= simplified;
 
   return {
     frameId: frame.id,
