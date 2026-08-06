@@ -13,7 +13,7 @@ import { resolveColor, resolveTheme, type ResolvedTheme } from "../core/themes";
 import { iconGlyph } from "../core/codegen";
 import { padBox } from "../core/scene";
 import { resolveAssetUrl } from "../tauri/api";
-import { LINE_HEIGHT_K } from "./measure";
+import { LINE_HEIGHT_K, measureText } from "./measure";
 
 const COMPONENT_TINT = 0xb28dff; // фиолетовый — мастера и экземпляры компонентов
 
@@ -400,7 +400,16 @@ export class CanvasRenderer {
         break;
       }
       case "text": {
-        const t = this.makeText(node, 0, 0, view.camera.zoom, r.w);
+        /* ПЕРЕНОС НА ЭКРАНЕ — ТОТ ЖЕ, ЧТО В РЕШАТЕЛЕ. Решатель у надписи с
+           `noWrap` меряет высоту БЕЗ переноса (см. `wrapHeight`), а экран
+           переносил её по ширине коробки: одна и та же надпись выходила
+           одной строкой в раскладке и двумя на экране, вторая строка лезла
+           на соседа. Паритет обязателен, иначе холст врёт про модель. */
+        const t = this.makeText(
+          node, 0, 0, view.camera.zoom,
+          node.layout.noWrap ? undefined : r.w,
+          node.layout.ellipsis ? r.w : undefined,
+        );
         // выравнивание внутри своего бокса (когда ширина больше текста)
         const align = node.style.textAlign ?? "left";
         if (align === "center") {
@@ -559,8 +568,43 @@ export class CanvasRenderer {
     return t;
   }
 
-  private makeText(node: SceneNode, x: number, y: number, zoom: number, wrapWidth?: number): Text {
-    const raw = node.text ?? "";
+  /**
+   * ХВОСТ, ЗАМЕНЁННЫЙ МНОГОТОЧИЕМ (`text-overflow: ellipsis`).
+   *
+   * На странице браузер показал ровно то, что влезло в коробку, и оборвал
+   * остаток многоточием. Холст обязан показать то же: иначе надпись
+   * выезжает за свою коробку и наезжает на соседа — в таблице файлов
+   * GitHub сообщение коммита шириной 474px лезло в колонку с датой,
+   * отведённую под 389px.
+   *
+   * Текст узла НЕ МЕНЯЕТСЯ: усечение — свойство показа, а не содержимого,
+   * и в инспекторе, и в экспорте строка остаётся полной (в CSS её режет та
+   * же тройка свойств, что и в оригинале).
+   *
+   * Отрезается по измерителю тем же движком, каким рисует Pixi, поэтому
+   * граница совпадает с настоящей.
+   */
+  private ellipsize(node: SceneNode, width: number): string {
+    const full = node.text ?? "";
+    const w = (s: string): number =>
+      measureText(s, node.style.fontSize, node.style.fontWeight, this.fontFor(node), undefined, {
+        letterSpacing: node.style.letterSpacing,
+        lineHeight: node.style.lineHeight,
+        uppercase: node.style.uppercase,
+      }).w;
+    if (!full || w(full) <= width) return full;
+    let lo = 0;
+    let hi = full.length;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (w(`${full.slice(0, mid)}…`) <= width) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo <= 0 ? "…" : `${full.slice(0, lo)}…`;
+  }
+
+  private makeText(node: SceneNode, x: number, y: number, zoom: number, wrapWidth?: number, clipWidth?: number): Text {
+    const raw = clipWidth === undefined ? (node.text ?? "") : this.ellipsize(node, clipWidth);
     const t = new Text({
       text: node.style.uppercase ? raw.toUpperCase() : raw,
       style: {

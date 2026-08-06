@@ -115,6 +115,16 @@ export function computeLayout(
       case "text": {
         const tp = padBox(node.layout.padding);
         w = textNaturalW(node) + tp.l + tp.r;
+        /* ОБРЕЗАННАЯ СТРОКА НЕ ПРЕТЕНДУЕТ НА ШИРИНУ СВОЕГО ТЕКСТА.
+           Интринсик у надписи — ширина текста в одну строку, и это верно,
+           пока строку показывают целиком. У обрезанной её показывают
+           ровно на ширину коробки, а остальное срезано (см.
+           `LayoutProps.ellipsis`): требуя место под невидимый хвост, узел
+           раздвигал бы ряд — в таблице файлов GitHub на 85px, прямо на
+           колонку с датой. */
+        if (node.layout.ellipsis && node.layout.maxWidth !== undefined) {
+          w = Math.min(w, node.layout.maxWidth);
+        }
         break;
       }
       case "button":

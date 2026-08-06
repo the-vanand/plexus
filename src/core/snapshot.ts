@@ -53,6 +53,19 @@ export interface SnapNode {
   ar?: number;
   /** Разметка inline-svg, если она невелика. */
   svg?: string;
+  /**
+   * ТЕКСТ ЭЛЕМЕНТА ИЗМЕРЕННО ОБРЕЗАН ПО ШИРИНЕ (multi-word ellipsis).
+   *
+   * Ставится, только когда браузер и объявил обрезку (`text-overflow:
+   * ellipsis`), и она РЕАЛЬНО случилась: содержимое шире коробки
+   * (`scrollWidth > clientWidth`). Объявление без обрезки в модель не идёт —
+   * запрет переноса на такой коробке ничего не исправил бы, а высоту
+   * поменять мог.
+   *
+   * Отсутствие поля обязано означать прежнее поведение: старые фикстуры
+   * сняты сборщиком без него.
+   */
+  tr?: 1;
 }
 
 export interface PageSnapshot {
@@ -92,6 +105,11 @@ export const SNAP_PROPS = [
   "line-height", "letter-spacing", "text-transform", "text-align", "text-decoration-line",
   "opacity", "object-fit", "overflow", "z-index", "aspect-ratio", "box-shadow",
   "white-space",
+  /* Обрезка строки многоточием. Без этого свойства снимок не отличал
+     «текст не влез и его срезали» от «текст показан целиком», и длинное
+     сообщение коммита в таблице файлов GitHub разворачивалось во всю
+     ширину, наезжая на колонку с датой. */
+  "text-overflow",
 ] as const;
 
 /**
@@ -169,7 +187,8 @@ export function collectorScript(
     'font-style': 'normal', 'letter-spacing': 'normal',
     'text-transform': 'none', 'text-align': 'start', 'text-decoration-line': 'none',
     'opacity': '1', 'object-fit': 'fill', 'overflow': 'visible', 'z-index': 'auto',
-    'aspect-ratio': 'auto', 'box-shadow': 'none', 'white-space': 'normal'
+    'aspect-ratio': 'auto', 'box-shadow': 'none', 'white-space': 'normal',
+    'text-overflow': 'clip'
   };
 
   /** Ждём, пока страница действительно собралась, а не просто загрузилась. */
@@ -257,30 +276,68 @@ export function collectorScript(
      Настоящий перенос, тег BR, сохраняется: он значим при любом
      white-space, и отличить его от форматирования исходника можно
      только здесь, у самой разметки. */
-  function ownText(el, collapseNl) {
+  /* ЗНАЧИМЫЙ ПРОБЕЛ МЕЖДУ СТРОЧНЫМИ СОСЕДЯМИ.
+     Последовательность пробельных знаков в white-space: normal
+     схлопывается в ОДИН пробел, и этот пробел — такой же символ, как
+     буква, если по обе стороны от него есть содержимое в одном строчном
+     потоке. Ведущий и хвостовой пробелы СТРОКИ отбрасываются, но
+     «начало строки» и «начало элемента» — не одно и то же: у строчного
+     элемента слева на той же строке стоит его сосед.
+     Отсюда две проверки, обе по вычисленному стилю, без догадок:
+      - поток внутри элемента строчный: во flex, grid и таблице
+        пробельный текстовый узел не образует ни элемента, ни пробела
+        (по спецификации он не рендерится вовсе);
+      - сосед по стыку строчного уровня: между двумя блоками пробельный
+        узел тоже выбрасывается. */
+  function inlineFlow(display) {
+    var d = display || 'block';
+    return d.indexOf('flex') < 0 && d.indexOf('grid') < 0 && d.indexOf('table') < 0
+      && d.indexOf('box') < 0 && d !== 'contents' && d !== 'none';
+  }
+  function inlineLevel(el) {
+    var d = '';
+    try { d = window.getComputedStyle(el).display; } catch (e) { return false; }
+    return d.indexOf('inline') === 0 || d === 'contents' || d.indexOf('ruby') === 0;
+  }
+
+  function ownText(el, collapseNl, selfInline, ownDisplay) {
     var raw = '';
     var marks = [];
+    var markInline = [];
     for (var i = 0; i < el.childNodes.length; i++) {
       var n = el.childNodes[i];
       if (n.nodeType === 3) raw += n.nodeValue;
       else if (n.nodeType === 1 && n.tagName === 'BR') raw += BR;
-      else if (n.nodeType === 1) marks.push(raw.length);
+      else if (n.nodeType === 1) { marks.push(raw.length); markInline.push(inlineLevel(n)); }
     }
+    var flow = inlineFlow(ownDisplay);
     var plain = '';
     var mark = '';
+    /* Есть ли слева от текущего места содержимое, стоящее на этой строке.
+       На старте это сосед САМОГО элемента — он существует лишь если
+       элемент строчного уровня; после жёсткого переноса — нет никого. */
+    var leftInline = flow && !!selfInline;
+    /* Был ли пробел ДО первого содержимого: регулярным выражением это не
+       проверить — текст сборщика едет в чужую страницу шаблонной строкой,
+       где обратный слэш пришлось бы удваивать (см. про MARK и NL выше). */
+    var leadSp = 0;
     var sp = 0, nl = 0, mi = 0;
     for (var k = 0; k <= raw.length; k++) {
       while (mi < marks.length && marks[mi] === k) {
         // пробел перед меткой выносим в строку сразу: иначе он потеряется
-        if (!nl && sp && mark) { mark += ' '; sp = 0; }
+        if (!nl && sp) {
+          if (flow && leftInline && markInline[mi]) mark += ' ';
+          sp = 0;
+        }
         mark += MARK;
+        leftInline = markInline[mi];
         mi++;
       }
       if (k === raw.length) break;
       var ch = raw.charAt(k);
-      if (ch === BR) { nl++; sp = 0; }
+      if (ch === BR) { nl++; sp = 0; leftInline = false; }
       else if (ch === NL && collapseNl) { if (!nl) sp = 1; }
-      else if (ch === NL) { nl++; sp = 0; }
+      else if (ch === NL) { nl++; sp = 0; leftInline = false; }
       else if (ch === ' ' || ch === String.fromCharCode(9) || ch === String.fromCharCode(13) || ch === String.fromCharCode(12) || ch === String.fromCharCode(11)) { if (!nl) sp = 1; }
       else {
         if (nl) {
@@ -293,7 +350,31 @@ export function collectorScript(
         }
         plain += ch;
         mark += ch;
+        leftInline = true;
       }
+      if (sp && !plain) leadSp = 1;
+    }
+    /* ХВОСТОВОЙ ПРОБЕЛ ЭЛЕМЕНТА тоже бывает значим: у строчного элемента
+       справа на той же строке стоит следующий сосед, и пробел перед
+       закрывающим тегом его отодвигает. Уходит только в разметку мест
+       (поле xm): поле x остаётся обрезанным с краёв, потому что по нему
+       считаются ширины листовых надписей, а их просветы восстанавливаются
+       ИЗМЕРЕННО (см. noteInlineLead в сборщике сцены). */
+    if (sp && !nl && flow && leftInline && selfInline && mark) mark += ' ';
+    /* КРАЕВОЙ ПРОБЕЛ ЛИСТОВОГО СТРОЧНОГО ЭЛЕМЕНТА идёт и в чистый текст.
+       У листа детей нет, значит нет и меток, и разметке мест (xm) пробел
+       передать не через что: единственный носитель — сам текст. А просвет
+       у такого элемента ИЗМЕРИТЬ НЕЛЬЗЯ, потому что он внутри его
+       собственной коробки: у span с текстом " forks" коробка 1088..1125
+       уже включает пробел, соседний strong кончается ровно на 1088, и
+       никакого зазора между братьями нет. Глифы поэтому вставали встык —
+       «0forks», «0stars», «the-vanand/plexus».
+       У элемента С ДЕТЬМИ пробел на краю в plain не идёт: там он уже
+       выражен разметкой мест и измеренным просветом до ребёнка
+       (noteOwnTextLead), и второй носитель посчитал бы место дважды. */
+    if (plain && marks.length === 0 && flow && selfInline && collapseNl) {
+      if (leadSp) plain = ' ' + plain;
+      if (sp && !nl) plain = plain + ' ';
     }
     return { text: plain, marked: mark };
   }
@@ -333,7 +414,9 @@ export function collectorScript(
       var box = el.getBoundingClientRect();
       var w = Math.round(box.width), h = Math.round(box.height);
       var ws = cs.whiteSpace || 'normal';
-      var parts = ownText(el, ws.indexOf('pre') !== 0 && ws !== 'break-spaces');
+      var disp = cs.display || 'block';
+      var selfInline = disp.indexOf('inline') === 0 || disp === 'contents' || disp.indexOf('ruby') === 0;
+      var parts = ownText(el, ws.indexOf('pre') !== 0 && ws !== 'break-spaces', selfInline, disp);
       var text = parts.text;
       var hasKids = el.children && el.children.length > 0;
       // нулевой размер без текста и детей — служебная обёртка
@@ -374,6 +457,17 @@ export function collectorScript(
       }
       var a = attrs(el);
       if (a) rec.a = a;
+
+      /* УСЕЧЕНИЕ МНОГОТОЧИЕМ — ФАКТ, А НЕ ОБЪЯВЛЕНИЕ.
+         Свойство text-overflow: ellipsis ставят про запас на коробки, где ничего
+         не переполняется (на странице GitHub объявлено у 55 элементов,
+         обрезано реально у 13). Модели нужен именно факт: содержимое шире
+         коробки. У строчного элемента scrollWidth нулевой, и это верно —
+         обрезка к нему по спецификации не применяется. */
+      if ((cs.textOverflow || 'clip').indexOf('ellipsis') >= 0
+          && el.scrollWidth > el.clientWidth + 1) {
+        rec.tr = 1;
+      }
 
       // пропорции картинки — из настоящих размеров файла
       if (el.tagName === 'IMG' && el.naturalWidth > 0 && el.naturalHeight > 0) {

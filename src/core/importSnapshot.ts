@@ -161,6 +161,39 @@ function importSnapshotToDocInner(
 
   const pageW = Math.max(320, Math.round(snap.viewportWidth || 1440));
 
+  /**
+   * УСЕЧЁННЫЙ МНОГОТОЧИЕМ ТЕКСТ: КОРОБКА, КОТОРАЯ ЕГО РЕЖЕТ.
+   *
+   * Сборщик помечает флагом `tr` тот элемент, у которого объявлено
+   * `text-overflow: ellipsis` и содержимое ИЗМЕРЕННО шире коробки. Но текст
+   * лежит не на нём: на странице GitHub помечен `<div>` шириной 389px, а
+   * текст — во вложенной ссылке с коробкой 474px, потому что
+   * `getBoundingClientRect` строчного элемента отдаёт полную ширину
+   * содержимого, а не видимую его часть. Отсюда и дефект: ссылка вставала
+   * на 474px и наезжала на колонку с датой.
+   *
+   * Обрезка по спецификации действует на ВСЁ строчное содержимое блока,
+   * поэтому и в модели она распространяется на поддерево: каждая надпись
+   * внутри — одна строка, без переноса, с потолком по ширине РЕЖУЩЕЙ
+   * коробки (её внутренняя ширина, за вычетом рамок и полей).
+   */
+  const clipW = new Map<number, number>();
+  {
+    const spread = (idx: number, w: number): void => {
+      const prev = clipW.get(idx);
+      if (prev !== undefined && prev <= w) return;
+      clipW.set(idx, w);
+      for (const c of kids.get(idx) ?? []) spread(c, w);
+    };
+    snap.nodes.forEach((n, idx) => {
+      if (n.tr !== 1) return;
+      const px = snapPx(n.s["padding-left"]) + snapPx(n.s["padding-right"]);
+      const bx = snapPx(n.s["border-left-width"]) + snapPx(n.s["border-right-width"]);
+      const inner = Math.round(n.r[2] - px - bx);
+      if (inner > 0) spread(idx, inner);
+    });
+  }
+
   /* ---------- рамка страницы ---------- */
   const frame = createNode("frame", opts.pageName || snap.title.slice(0, 40) || "Импорт");
   let maxRight = 160;
@@ -1722,7 +1755,17 @@ function importSnapshotToDocInner(
       const t = runText(c);
       if (t) out = out ? `${out} ${t}` : t;
     }
-    return out.replace(/\s*\n\s*/g, "\n").trim();
+    /* КРАЕВОЙ ПРОБЕЛ НАДПИСИ НЕ ОБРЕЗАЕМ. У листового строчного элемента
+       сборщик оставляет его в тексте намеренно (см. `ownText`): просвет к
+       соседу лежит ВНУТРИ его собственной коробки, и измерить его нельзя —
+       у `<span> forks</span>` коробка 1088..1125 уже включает пробел, а
+       предыдущий `<strong>` кончается ровно на 1088. Обрезав, мы ставили
+       глифы встык: «0forks», «0stars», «the-vanand/plexus».
+       Внутренние прогоны при этом схлопываются в один пробел, поэтому
+       склейка «свой текст + текст детей» не даёт двойных. */
+    const body = out.replace(/\s*\n\s*/g, "\n").replace(/[ \t]+/g, " ");
+    const core = body.trim();
+    return core ? edgeSpaced(body, core) : "";
   };
 
   /**
@@ -2468,7 +2511,15 @@ function importSnapshotToDocInner(
          столько, сколько занимал: потолок высоты — это и есть обрезка.
          См. `clipsOwnText`: без этого сноски distill.pub разворачивались
          на 15 394px, а названия товаров newegg.com — на 400–594px. */
-      if (clipsOwnText(idx, n)) node.layout.maxHeight = Math.max(1, Math.round(n.r[3]));
+      /* ТЕКСТ, ОБРЕЗАННЫЙ МНОГОТОЧИЕМ (`text-overflow: ellipsis`).
+         Проверяется ПЕРВОЙ: это не догадка по геометрии, а измеренный факт
+         из снимка, и он строже любой оценки — браузер сам сообщил, что
+         содержимое шире коробки. См. `LayoutProps.ellipsis`. */
+      const clip = clipW.get(idx);
+      if (clip !== undefined) {
+        node.layout.noWrap = true;
+        node.layout.ellipsis = true;
+      } else if (clipsOwnText(idx, n)) node.layout.maxHeight = Math.max(1, Math.round(n.r[3]));
       else if (singleLine(n, text)) node.layout.noWrap = true;
       else {
         /* МНОГОСТРОЧНЫЙ АБЗАЦ: ПОТОЛОК ПО ИЗМЕРЕННОЙ ВЫСОТЕ.
@@ -2501,6 +2552,10 @@ function importSnapshotToDocInner(
       // ширину берём измеренную как потолок: перенос строк совпадёт с оригиналом
       node.layout.width = "fill";
       if (parentSnap && n.r[2] < parentSnap.r[2] - 2) node.layout.maxWidth = Math.round(n.r[2]);
+      /* У обрезанного узла потолок ширины — РЕЖУЩАЯ коробка, а не своя
+         измеренная: своя как раз и есть ширина невидимого содержимого
+         (474px против видимых 389). */
+      if (clip !== undefined) node.layout.maxWidth = Math.min(node.layout.maxWidth ?? clip, clip);
       if (looksCentered(n, parentSnap)) {
         node.layout.centered = true;
         dropSideMargins(node, parentSnap);
@@ -2750,6 +2805,24 @@ function importSnapshotToDocInner(
   function markSegments(n: SnapNode): string[] {
     if (n.xm) return n.xm.split(MARK);
     return [n.x ?? ""];
+  }
+
+  /**
+   * КУСОК ТЕКСТА С СОХРАНЁННЫМИ КРАЕВЫМИ ПРОБЕЛАМИ.
+   *
+   * Пробельный прогон схлопывается в один пробел, но САМ ПРОБЕЛ на краю
+   * остаётся: решение «значим он или нет» принято ещё в сборщике, у самой
+   * разметки, где видно и поток родителя, и уровень соседа (см. `ownText`).
+   * Здесь этой видимости уже нет, и вычищать край — значит выбрасывать
+   * готовый ответ. NBSP (U+00A0) считается пробелом на краю потому, что
+   * `String.trim()` его тоже съедает, а на экране он — настоящий отбив.
+   */
+  const EDGE_WS = /[ \u00a0\t]/;
+  function edgeSpaced(body: string, core: string): string {
+    const lead = EDGE_WS.test(body.charAt(0)) ? body.charAt(0) : "";
+    const last = body.charAt(body.length - 1);
+    const tail = body.length > 1 && EDGE_WS.test(last) ? last : "";
+    return `${lead}${core}${tail}`;
   }
 
   /**
@@ -3200,8 +3273,9 @@ function importSnapshotToDocInner(
     band: number,
     bandX = 0,
   ): void {
-    const text = raw.replace(/\s*\n\s*/g, "\n").replace(/[ \t]+/g, " ").trim();
-    if (!text) return;
+    const body = raw.replace(/\s*\n\s*/g, "\n").replace(/[ \t]+/g, " ");
+    const core = body.trim();
+    if (!core) return;
     const fs = snapPx(n.s["font-size"]) || 16;
     const lh = snapPx(n.s["line-height"]) || fs * 1.4;
 
@@ -3234,7 +3308,17 @@ function importSnapshotToDocInner(
     if (!roomy && !(row && oneLine && bandX >= 4)) return;
 
     const tn = createNode("text", "текст");
-    tn.text = text;
+    /* КРАЕВОЙ ПРОБЕЛ КУСКА — СИМВОЛ СОДЕРЖИМОГО, А НЕ ФОРМАТИРОВАНИЕ.
+       В ветке `!roomy` кусок стоит НА ОДНОЙ СТРОКЕ с измеренными детьми,
+       то есть по обе стороны от него есть содержимое, и краевой пробел
+       там значим ровно так же, как буква. Сборщик его для этого и
+       сохраняет (см. `ownText`), а `trim()` стирал — и куски слипались
+       глифами: «0stars» вместо «0 stars», «Contributors◯». NBSP тем же
+       `trim()` съедался всегда, хотя значим он при любом `white-space`:
+       так «97ad298 · Aug 6» превращалось в «97ad298·Aug 6».
+       В ветке `roomy` у куска СВОИ строки, и там краевой пробел законно
+       схлопывается — это начало и конец строки. */
+    tn.text = roomy ? core : edgeSpaced(body, core);
     applyTypography(tn, n);
     if (!roomy) {
       tn.layout.width = Math.round(bandX);
