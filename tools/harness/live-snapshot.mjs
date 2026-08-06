@@ -51,6 +51,11 @@ const t0 = Date.now();
 const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 const page = await browser.newPage({
   viewport: { width, height: 900 },
+  /* Тема берётся из окружения: PLX_SCHEME=dark снимает тёмную схему.
+     Webview в приложении следует теме СИСТЕМЫ пользователя, и снимок
+     стенда обязан уметь то же — иначе дефекты тёмных фонов не
+     воспроизводятся. */
+  colorScheme: process.env.PLX_SCHEME === "dark" ? "dark" : "light",
   /* Реальный UA: часть сайтов отдаёт headless-браузеру урезанную версию,
      и тогда снимок описывал бы не ту страницу, которую увидит человек. */
   userAgent:

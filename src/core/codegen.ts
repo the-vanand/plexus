@@ -287,6 +287,23 @@ function cssForNode(node: SceneNode, parent: SceneNode | null, theme: ResolvedTh
   const stretchedX = abs && layout.right !== null && layout.right !== undefined;
   const stretchedY = abs && layout.bottom !== null && layout.bottom !== undefined;
   const emitSize = (axis: "width" | "height", mode: typeof layout.width) => {
+    /* ЧИСЛОВАЯ ВЫСОТА КОНТЕЙНЕРА В ПОТОКЕ — МИНИМУМ, А НЕ ПОТОЛОК.
+       Решатель холста растит контейнер сверх числовой высоты, когда
+       содержимое выше («страница и секции никогда не обрезают
+       содержимое»), а кодоген писал жёсткий `height` — и один и тот же
+       документ на холсте выглядел цело, а в экспорте содержимое
+       ВЫПАДАЛО из коробки. GitHub ставит обёртке контента
+       `min-height: calc(100vh - 64px)` (вычисленно 836px): импорт
+       честно записал 836 числом, экспорт заморозил, и вся страница
+       ниже первого экрана легла на белое тело документа — «фон не
+       идёт больше половины сайта». `min-height` повторяет решатель
+       буква в букву. Листья (кнопки, картинки, разделители) остаются
+       с точным `height`: решатель их тоже не растит. Прокручиваемые
+       коробки не задеты: их потолок — отдельный `max-height`. */
+    if (axis === "height" && typeof mode === "number" && node.type === "container" && !abs) {
+      d.push(["min-height", `${mode}px`]);
+      return;
+    }
     if (typeof mode === "number") d.push([axis, `${mode}px`]);
     else if (mode === "fill") {
       if (abs) {
