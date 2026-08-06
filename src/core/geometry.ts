@@ -24,6 +24,59 @@ export function rotateVec(vx: number, vy: number, a: number): Pt {
   return rotateAround(vx, vy, 0, 0, a);
 }
 
+/* ------------------------------------------------------------------ */
+/* Прямоугольники: пересечение, накрытие, габарит поворота             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Пересекаются ли прямоугольники. Касание границей пересечением НЕ считается:
+ * иначе рамка выделения нулевой ширины (клик без протяжки) «задевала» бы всё,
+ * что лежит на её линии.
+ */
+export const rectsIntersect = (a: Rect, b: Rect): boolean =>
+  a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+/** Полностью ли `inner` лежит внутри `outer` (границы совпадать могут). */
+export const rectContains = (outer: Rect, inner: Rect): boolean =>
+  inner.x >= outer.x &&
+  inner.y >= outer.y &&
+  inner.x + inner.w <= outer.x + outer.w &&
+  inner.y + inner.h <= outer.y + outer.h;
+
+/**
+ * Осевой габарит повёрнутого прямоугольника (вокруг собственного центра).
+ *
+ * Нужен там, где сравнивать надо именно с осевой рамкой выделения: точный
+ * тест «повёрнутый прямоугольник × прямоугольник» дал бы разницу лишь в узкой
+ * зоне у углов, а стоил бы отдельного SAT-кода. Для повёрнутого узла габарит
+ * чуть щедрее на попадание и чуть строже на полное накрытие — обе ошибки
+ * безопасны.
+ */
+export function rotatedBounds(rect: Rect, angleRad: number): Rect {
+  if (angleRad === 0) return rect;
+  const cx = rect.x + rect.w / 2;
+  const cy = rect.y + rect.h / 2;
+  const corners = [
+    rotateAround(rect.x, rect.y, cx, cy, angleRad),
+    rotateAround(rect.x + rect.w, rect.y, cx, cy, angleRad),
+    rotateAround(rect.x + rect.w, rect.y + rect.h, cx, cy, angleRad),
+    rotateAround(rect.x, rect.y + rect.h, cx, cy, angleRad),
+  ];
+  const xs = corners.map((p) => p.x);
+  const ys = corners.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  return { x: minX, y: minY, w: Math.max(...xs) - minX, h: Math.max(...ys) - minY };
+}
+
+/** Прямоугольник по двум углам (порядок точек не важен). */
+export const rectFromPoints = (ax: number, ay: number, bx: number, by: number): Rect => ({
+  x: Math.min(ax, bx),
+  y: Math.min(ay, by),
+  w: Math.abs(bx - ax),
+  h: Math.abs(by - ay),
+});
+
 export type HandleKey = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
 /** Направление каждой ручки в локальных осях (−1|0|1 по каждой оси). */

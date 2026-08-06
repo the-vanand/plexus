@@ -59,6 +59,8 @@ export interface RenderView {
   badges: GapBadge[];
   insertion: InsertionLine | null;
   dragOutline: Rect | null;
+  /** Рамка выделения (мировые координаты), пока тянут по пустому месту. */
+  marquee: Rect | null;
   /** Сетка точек на холсте (переключается в меню «Вид»). */
   gridShow: boolean;
   /** Режим «глазик»: показать провода связей. */
@@ -781,6 +783,19 @@ export class CanvasRenderer {
         const [sx2] = this.toScreen(view, ins.to, 0);
         g.moveTo(sx1, sy).lineTo(sx2, sy).stroke({ width: 3, color: ACCENT });
       }
+      this.overlay.addChild(g);
+    }
+
+    /* рамка выделения: тот же акцентный цвет и та же пара «заливка + обводка»,
+       что у призрака перетаскивания, — на холсте это один язык «временного
+       прямоугольника жеста», а не новая сущность */
+    if (view.marquee) {
+      const r = view.marquee;
+      const [sx, sy] = this.toScreen(view, r.x, r.y);
+      const g = new Graphics();
+      g.rect(sx, sy, r.w * z, r.h * z)
+        .fill({ color: ACCENT, alpha: 0.1 })
+        .stroke({ width: 1, color: ACCENT, alpha: 0.9 });
       this.overlay.addChild(g);
     }
 

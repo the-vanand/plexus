@@ -8,8 +8,10 @@
  *
  * Жесты:
  *  - колесо: пан;  Ctrl/Cmd + колесо: зум к курсору;
- *  - средняя кнопка / Space + drag / drag по пустоте: пан;
- *  - левый клик: выделение;  drag выделенного:
+ *  - средняя кнопка / Space + drag: пан;
+ *  - drag по пустоте: рамка выделения (Shift — добавить, Alt — исключить);
+ *  - левый клик: выделение (Shift/Alt — переключить узел в наборе);
+ *    drag выделенного:
  *      absolute/фрейм → живое перемещение со снапом и направляющими,
  *      flow-ребёнок  → перестановка внутри родителя с индикатором вставки;
  *  - правый клик: контекстное меню (добавление элементов);
@@ -18,7 +20,14 @@
 import type { Camera, GapBadge, Guide, InsertionLine, Rect } from "../core/types";
 import { useStore } from "../core/store";
 import { useUi } from "../core/uiStore";
-import { findDeepestAt, isContainerLike, padBox } from "../core/scene";
+import {
+  collectInMarquee,
+  findDeepestAt,
+  isContainerLike,
+  mergeSelection,
+  padBox,
+  type MarqueeMode,
+} from "../core/scene";
 import { computeSnap } from "./guides";
 import { GRID_SIZE } from "./renderer";
 import {
@@ -27,6 +36,7 @@ import {
   rad2deg,
   rotateAround,
   rotateVec,
+  rectFromPoints,
   HANDLE_DIRS,
   HANDLE_CURSOR,
   HANDLE_KEYS,
@@ -66,7 +76,16 @@ export interface ControllerHooks {
   onZoomChange: (zoom: number) => void;
 }
 
-type Mode = "idle" | "pan" | "maybe-drag" | "drag-abs" | "drag-flow" | "resize" | "rotate" | "wire";
+type Mode =
+  | "idle"
+  | "pan"
+  | "marquee"
+  | "maybe-drag"
+  | "drag-abs"
+  | "drag-flow"
+  | "resize"
+  | "rotate"
+  | "wire";
 
 const DRAG_THRESHOLD_PX = 4;
 const ZOOM_MIN = 0.08;
@@ -83,6 +102,8 @@ export class InteractionController {
   badges: GapBadge[] = [];
   insertion: InsertionLine | null = null;
   dragOutline: Rect | null = null;
+  /** Рамка выделения в мировых координатах; null — пока порог не пройден. */
+  marquee: Rect | null = null;
 
   private mode: Mode = "idle";
   private spaceDown = false;
@@ -92,6 +113,11 @@ export class InteractionController {
   private dragId: string | null = null;
   private grabOffset = { x: 0, y: 0 };
   private flowDropIndex = -1;
+
+  // состояние рамки выделения (фиксируется в начале жеста)
+  private marqueeStart = { x: 0, y: 0 };
+  private marqueeBase: string[] = [];
+  private marqueeMode: MarqueeMode = "replace";
 
   // состояние ресайза/поворота (захватывается один раз в начале жеста)
   private activeHandle: HandleKey | null = null;
@@ -251,8 +277,30 @@ export class InteractionController {
     const hit = findDeepestAt(store.doc, this.hooks.getRects(), w.x, w.y);
 
     if (!hit) {
-      store.select([]);
-      this.mode = "pan"; // drag по пустоте = панорама
+      /* ПРОТЯЖКА ПО ПУСТОМУ МЕСТУ — РАМКА ВЫДЕЛЕНИЯ, А НЕ ПАНОРАМА.
+         Панорамирование никуда не делось: средняя кнопка, Space + drag и
+         колесо. А вот выделить группу узлов больше нечем, и жест «потянуть
+         по пустоте» — то, что пользователь ждёт с рабочего стола.
+         Выделение не сбрасываем сразу: оно нужно как база для Shift/Alt,
+         а при клике без протяжки сбросится на отпускании. */
+      this.marqueeBase = store.selection;
+      this.marqueeMode = marqueeModeOf(e);
+      this.marqueeStart = { x: w.x, y: w.y };
+      this.marquee = null;
+      this.mode = "marquee";
+      return;
+    }
+
+    /* Клик с модификатором правит набор, а не начинает перетаскивание:
+       Shift — переключить узел, Alt — убрать из набора. */
+    if (e.shiftKey || e.altKey) {
+      const sel = store.selection;
+      const inSet = sel.includes(hit);
+      store.select(
+        e.altKey || inSet ? sel.filter((id) => id !== hit) : [...sel, hit],
+      );
+      this.mode = "idle";
+      this.hooks.requestRender();
       return;
     }
 
@@ -276,6 +324,10 @@ export class InteractionController {
         this.camera.x -= dx / this.camera.zoom;
         this.camera.y -= dy / this.camera.zoom;
         this.hooks.requestRender();
+        return;
+      }
+      case "marquee": {
+        this.updateMarquee(s);
         return;
       }
       case "maybe-drag": {
@@ -332,6 +384,32 @@ export class InteractionController {
       }
     }
   };
+
+  /* ---------------- рамка выделения ---------------- */
+
+  /**
+   * Обновление рамки: набор пересчитывается на каждом движении, поэтому
+   * подсветка выделенных узлов идёт вживую, а не появляется на отпускании.
+   * Порог в пикселях защищает от дрожания руки при обычном клике по пустоте.
+   */
+  private updateMarquee(s: { x: number; y: number }): void {
+    if (this.marquee === null) {
+      const moved = Math.hypot(s.x - this.downScreen.x, s.y - this.downScreen.y);
+      if (moved < DRAG_THRESHOLD_PX) return;
+    }
+    const w = this.toWorld(s.x, s.y);
+    this.marquee = rectFromPoints(this.marqueeStart.x, this.marqueeStart.y, w.x, w.y);
+    const store = useStore.getState();
+    const hits = collectInMarquee(store.doc, this.hooks.getRects(), this.marquee);
+    const next = mergeSelection(this.marqueeBase, hits, this.marqueeMode);
+    /* Записываем в стор, только когда набор реально изменился: иначе каждое
+       движение мыши перерисовывает инспектор и дерево слоёв впустую. */
+    const cur = store.selection;
+    if (next.length !== cur.length || next.some((id, i) => id !== cur[i])) {
+      store.select(next);
+    }
+    this.hooks.requestRender();
+  }
 
   /* ---------------- провода («глазик») ---------------- */
 
@@ -615,6 +693,13 @@ export class InteractionController {
       this.wireDrag = null;
       this.wireTargetId = null;
     }
+    if (this.mode === "marquee") {
+      // клик по пустоте без протяжки — привычный сброс выделения
+      if (this.marquee === null && this.marqueeMode === "replace") {
+        useStore.getState().select([]);
+      }
+      this.marqueeBase = [];
+    }
     if (this.mode === "drag-flow" && this.dragId && this.flowDropIndex >= 0) {
       const store = useStore.getState();
       const node = store.doc.nodes[this.dragId];
@@ -637,6 +722,7 @@ export class InteractionController {
     this.badges = [];
     this.insertion = null;
     this.dragOutline = null;
+    this.marquee = null;
     this.flowDropIndex = -1;
     this.el.style.cursor = "default";
     this.hooks.requestRender();
@@ -757,6 +843,17 @@ export class InteractionController {
     target.addEventListener(type, fn as EventListener, opts);
     this.disposers.push(() => target.removeEventListener(type, fn as EventListener, opts));
   }
+}
+
+/**
+ * Модификатор рамки. Ctrl/Cmd сознательно НЕ занят: с колесом это зум, а на
+ * macOS Ctrl+клик — это вторичный клик, который открывает контекстное меню.
+ * Остаются Shift (добавить) и Alt (исключить) — та же пара, что в проводнике.
+ */
+function marqueeModeOf(e: PointerEvent): MarqueeMode {
+  if (e.shiftKey) return "add";
+  if (e.altKey) return "subtract";
+  return "replace";
 }
 
 /** Утилита для контекст-меню: может ли узел принимать детей. */

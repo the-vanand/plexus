@@ -318,12 +318,31 @@ export function Inspector() {
   const theme = resolveTheme(doc.theme);
   const activeBreakpoint = useUi((s) => s.activeBreakpoint);
 
+  /* Несколько выделенных — не то же самое, что «ничего не выбрано»: рамкой
+     выделения набор собирается легко, и молчащий инспектор выглядел бы как
+     потеря выделения. Свойств группы пока нет, поэтому честно говорим,
+     сколько узлов в наборе и что с ними можно сделать. */
+  if (!node && selection.length > 1) {
+    return (
+      <aside className="inspector">
+        <div className="insp-empty">
+          <div className="insp-empty-title">Выбрано узлов: {selection.length}</div>
+          <p>Свойства правятся у одного элемента — кликни нужный.</p>
+          <p>Del — удалить набор.</p>
+          <p>Ctrl+D — дублировать набор.</p>
+          <p>Shift+клик — добавить, Alt+клик — убрать из набора.</p>
+        </div>
+      </aside>
+    );
+  }
+
   if (!node) {
     return (
       <aside className="inspector">
         <div className="insp-empty">
           <div className="insp-empty-title">Ничего не выбрано</div>
           <p>Клик — выбрать элемент.</p>
+          <p>Протяжка по пустому месту — рамка выделения.</p>
           <p>Правый клик — добавить элемент.</p>
           <p>Ctrl+колесо — зум, колесо — панорама.</p>
           <p>Ctrl+Z / Ctrl+Shift+Z — отмена и повтор.</p>
