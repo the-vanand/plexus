@@ -380,6 +380,103 @@ button.tab {
   display: flex;
   gap: 6px;
 }
+/* Выбор палитры (стиль сайта) */
+.palette-picker {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.palette-count {
+  opacity: 0.55;
+  font-weight: 400;
+}
+.palette-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.palette-filters .chip {
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.palette-filters .chip:hover {
+  border-color: var(--accent, #7aa2ff);
+}
+.palette-filters .chip.on {
+  background: var(--accent, #7aa2ff);
+  border-color: var(--accent, #7aa2ff);
+  color: #10131a;
+}
+.palette-search {
+  width: 100%;
+}
+.palette-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.palette-strip {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  background: transparent;
+}
+.palette-strip span {
+  display: block;
+  height: 100%;
+}
+.palette-strip:hover {
+  border-color: var(--accent, #7aa2ff);
+  box-shadow: 0 0 0 1px var(--accent, #7aa2ff);
+}
+.palette-strip.on {
+  border-color: var(--accent, #7aa2ff);
+  box-shadow: 0 0 0 2px var(--accent, #7aa2ff);
+}
+.palette-strip .palette-num {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  height: auto;
+  font-size: 11px;
+  line-height: 1;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(16, 18, 24, 0.72);
+  color: #fff;
+  pointer-events: none;
+}
+.palette-reset,
+.palette-more {
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.palette-reset:hover,
+.palette-more:hover {
+  border-color: var(--accent, #7aa2ff);
+}
+
 /* Кнопки выравнивания узла внутри родителя (инспектор):
    две отдельные группы — горизонталь и вертикаль */
 .align-rows {
@@ -750,6 +847,41 @@ button.tab {
   font-size: 16px;
   font-weight: 600;
   margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 20px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0.65;
+}
+.modal-close:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+/* Окно настроек проекта прижато к правому краю: холст остаётся виден,
+   и предпросмотр палитр при наведении реально видно. Подложка без
+   затемнения слева — смотреть на холст сквозь вуаль бессмысленно. */
+.modal-backdrop.modal-side {
+  place-items: stretch end;
+  background: transparent;
+}
+.modal-backdrop.modal-side .modal {
+  height: 100%;
+  max-height: 100vh;
+  overflow-y: auto;
+  border-radius: 0;
+  border-top: none;
+  border-bottom: none;
+  border-right: none;
+  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.45);
 }
 .modal-actions {
   display: flex;

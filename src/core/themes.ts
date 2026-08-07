@@ -12,13 +12,30 @@
 
 import type { ContainerType, SpaceToken, SpaceValue } from "./types";
 
-export type PresetId = "minimal" | "retro" | "brutalist" | "corporate" | "playful";
+export type PresetId =
+  | "minimal"
+  | "retro"
+  | "brutalist"
+  | "corporate"
+  | "playful"
+  | "dark"
+  | "glass"
+  | "neumorphic"
+  | "flat"
+  | "editorial";
 
 /** Что хранится в документе. */
 export interface ThemeSpec {
   preset: PresetId;
   /** Акцентный цвет — единственный «ползунок» пользователя. */
   accent: string;
+  /**
+   * Палитра из 4-5 цветов (подобранная, например, на color.romanuke.com).
+   * Когда задана, цвета темы выводятся из неё детерминированным маппингом
+   * (см. paletteToColors) поверх выбранного пресета: шрифты, радиусы и
+   * тени остаются пресетными, а цвет приходит из палитры.
+   */
+  palette?: string[];
 }
 
 export interface ThemeColors {
@@ -250,9 +267,251 @@ export const PRESETS: Record<PresetId, PresetDef> = {
       accentInk: inkFor(accentHex),
     }),
   },
+  dark: {
+    /* Тёмный режим в духе современных инструментов: фон не чёрный, а
+       тёмно-серый (L 9%), текст off-white, акцент чуть приглушён —
+       насыщенный цвет на тёмном «горит». */
+    label: "Тёмный",
+    fonts: { heading: "'Inter', sans-serif", body: "'Inter', sans-serif" },
+    googleFamilies: ["Inter:wght@400;500;600;700"],
+    radius: { sm: 8, md: 12, lg: 16 },
+    shadow: "0 0 0 1px rgba(255,255,255,0.07), 0 4px 16px rgba(0,0,0,0.4)",
+    derive: (a) => {
+      /* Приглушать имеет смысл только НАСЫЩЕННЫЙ акцент: слабый (s<0.4)
+         терял последний цвет и сливался с muted в два серых пятна. */
+      const s = a.s >= 0.4 ? a.s - 0.15 : Math.max(a.s, 0.25);
+      const accent = escapeInkDeadZone(
+        hslToHex(a.h, s, Math.min(0.72, a.l + 0.1)),
+        hslToHex(a.h, 0.08, 0.09),
+      );
+      return {
+        bg: hslToHex(a.h, 0.08, 0.09),
+        surface: hslToHex(a.h, 0.1, 0.14),
+        text: hslToHex(a.h, 0.05, 0.94),
+        muted: hslToHex(a.h, 0.07, 0.62),
+        line: hslToHex(a.h, 0.1, 0.22),
+        accent,
+        accentInk: inkFor(accent),
+      };
+    },
+  },
+  glass: {
+    /* Глассморфизм: глубокий цветной фон, «морозные» панели, крупные
+       радиусы. Токены дают непрозрачный эквивалент стекла; сам blur
+       добавляется на уровне карточек. */
+    label: "Стекло",
+    fonts: { heading: "'DM Sans', sans-serif", body: "'DM Sans', sans-serif" },
+    googleFamilies: ["DM+Sans:wght@400;500;600;700"],
+    radius: { sm: 12, md: 18, lg: 24 },
+    shadow: "0 8px 32px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.12)",
+    derive: (a) => {
+      const accent = hslToHex(a.h, Math.min(1, a.s + 0.1), Math.min(0.75, a.l + 0.15));
+      return {
+        bg: hslToHex(a.h, 0.45, 0.1),
+        surface: hslToHex(a.h, 0.25, 0.18),
+        text: "#ffffff",
+        muted: hslToHex(a.h, 0.2, 0.7),
+        line: hslToHex(a.h, 0.3, 0.28),
+        accent,
+        accentInk: inkFor(accent),
+      };
+    },
+  },
+  neumorphic: {
+    /* Мягкий рельеф (soft UI): поверхность совпадает с фоном, глубину
+       делает пара теней — светлая сверху-слева, тёмная снизу-справа.
+       Текст тёмный: серый-на-сером не проходит по контрасту. */
+    label: "Мягкий рельеф",
+    fonts: { heading: "'Nunito Sans', sans-serif", body: "'Nunito Sans', sans-serif" },
+    googleFamilies: ["Nunito+Sans:wght@400;500;600;700"],
+    radius: { sm: 12, md: 18, lg: 24 },
+    shadow: "-8px -8px 16px rgba(255,255,255,0.9), 8px 8px 16px rgba(163,177,198,0.6)",
+    derive: (a) => {
+      const accent = hslToHex(a.h, Math.min(1, a.s + 0.1), Math.min(0.48, a.l));
+      return {
+        bg: hslToHex(a.h, 0.2, 0.88),
+        surface: hslToHex(a.h, 0.2, 0.88),
+        text: hslToHex(a.h, 0.2, 0.18),
+        muted: hslToHex(a.h, 0.12, 0.4),
+        line: hslToHex(a.h, 0.15, 0.78),
+        accent,
+        accentInk: inkFor(accent),
+      };
+    },
+  },
+  flat: {
+    /* Плоский стиль швейцарской школы: иерархию делают цвет и
+       типографика; тень одна, минимальная — только чтобы отличать
+       кликабельное (Flat 2.0). */
+    label: "Плоский",
+    fonts: { heading: "'IBM Plex Sans', sans-serif", body: "'IBM Plex Sans', sans-serif" },
+    googleFamilies: ["IBM+Plex+Sans:wght@400;500;600;700"],
+    radius: { sm: 4, md: 6, lg: 8 },
+    shadow: "0 1px 3px rgba(0,0,0,0.10)",
+    derive: (a, accentHex) => ({
+      bg: "#ffffff",
+      surface: hslToHex(a.h, 0.06, 0.97),
+      text: hslToHex(a.h, 0.15, 0.1),
+      muted: hslToHex(a.h, 0.08, 0.42),
+      line: hslToHex(a.h, 0.06, 0.88),
+      accent: accentHex,
+      accentInk: inkFor(accentHex),
+    }),
+  },
+  editorial: {
+    /* Редакционный: контрастные serif-заголовки, тёплое ivory вместо
+       белого, приглушённый акцент — журнальная типографика. */
+    label: "Редакционный",
+    fonts: { heading: "'DM Serif Display', serif", body: "'Source Serif 4', serif" },
+    googleFamilies: ["DM+Serif+Display:wght@400", "Source+Serif+4:wght@400;600"],
+    radius: { sm: 4, md: 6, lg: 10 },
+    shadow: "0 2px 8px rgba(40,30,20,0.08)",
+    derive: (a) => {
+      const accent = hslToHex(a.h, Math.min(0.75, a.s), Math.min(0.5, a.l));
+      return {
+        bg: hslToHex(35, 0.15, 0.97),
+        surface: hslToHex(35, 0.18, 0.93),
+        text: hslToHex(28, 0.25, 0.12),
+        muted: hslToHex(28, 0.15, 0.4),
+        line: hslToHex(35, 0.18, 0.84),
+        accent,
+        accentInk: inkFor(accent),
+      };
+    },
+  },
 };
 
 export const PRESET_IDS = Object.keys(PRESETS) as PresetId[];
+
+/* ------------------------------------------------------------------ */
+/* Палитра → цвета темы                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Детерминированный маппинг палитры из 4-5 цветов на токены темы.
+ *
+ * Правила читаемости важнее верности палитре: подобранная палитра может
+ * быть целиком пастельной или целиком тёмной, а текст обязан читаться.
+ *  1. Сортировка по светимости: самый светлый — фон, самый тёмный — текст.
+ *  2. Контраст текст/фон < 4.5 — светлость якорей форсируется (WCAG AA).
+ *  3. Акцент — самый насыщенный из средних цветов; контраст с фоном < 3
+ *     — светлость акцента сдвигается в нужную сторону.
+ *  4. Поверхность — следующий средний цвет, зажатый между фоном и текстом.
+ *  5. Приглушённый и линия — производные, с собственной проверкой
+ *     контраста.
+ */
+/**
+ * Довести цвет до заданного контраста с фоном, шагая по светлоте.
+ * Направление выбирается по ПОТОЛКУ: на среднетональном фоне (L≈0.5)
+ * контраст 3:1 вверх недостижим математически — идти надо вниз.
+ */
+function forceContrast(color: string, bg: string, target: number): string {
+  if (contrastRatio(color, bg) >= target) return color;
+  const bgLum = luminance(bg);
+  const maxUp = 1.05 / (bgLum + 0.05);
+  const maxDown = (bgLum + 0.05) / 0.05;
+  const darker = maxDown >= maxUp;
+  let out = color;
+  for (let i = 0; i < 18 && contrastRatio(out, bg) < target; i += 1) {
+    const h = hexToHsl(out);
+    out = darker
+      ? hslToHex(h.h, h.s, Math.max(h.l - 0.05, 0))
+      : hslToHex(h.h, h.s, Math.min(h.l + 0.05, 1));
+  }
+  return out;
+}
+
+/**
+ * УВЕСТИ АКЦЕНТ ИЗ «МЁРТВОЙ ЗОНЫ» ЧЕРНИЛ.
+ *
+ * У средней светлоты (L ≈ 0.34–0.47) есть неприятное свойство: НИ белый,
+ * НИ почти-чёрный текст не набирают на таком фоне 4.5:1 — надпись на
+ * акцентной кнопке нечитаема, какие чернила ни выбери. Кнопку лечит
+ * только сдвиг самого акцента. Направление выбирается так, чтобы не
+ * потерять контраст с фоном страницы: на светлом фоне акцент темнеет,
+ * на тёмном — светлеет.
+ */
+function escapeInkDeadZone(accent: string, bg: string): string {
+  let out = accent;
+  for (let i = 0; i < 12; i += 1) {
+    const inkOk =
+      Math.max(contrastRatio(out, "#ffffff"), contrastRatio(out, "#15181c")) >= 4.5;
+    if (inkOk) return out;
+    const h = hexToHsl(out);
+    out =
+      luminance(bg) > 0.35
+        ? hslToHex(h.h, h.s, Math.max(h.l - 0.04, 0))
+        : hslToHex(h.h, h.s, Math.min(h.l + 0.04, 1));
+  }
+  return out;
+}
+
+export function paletteToColors(palette: string[]): ThemeColors | null {
+  const hexes = [...new Set(palette.map((c) => c.trim()).filter((c) => /^#[0-9a-fA-F]{6}$/.test(c)))];
+  if (hexes.length < 3) return null;
+  const lums = hexes.map(luminance);
+  const sorted = [...hexes].sort((a, b) => luminance(b) - luminance(a));
+
+  let bg = sorted[0];
+  let text = sorted[sorted.length - 1];
+  if (contrastRatio(bg, text) < 4.5) {
+    const bgH = hexToHsl(bg);
+    const txH = hexToHsl(text);
+    bg = hslToHex(bgH.h, bgH.s, Math.max(bgH.l, 0.94));
+    text = hslToHex(txH.h, txH.s, Math.min(txH.l, 0.15));
+  }
+  if (lums.every((l) => l > 0.5)) {
+    const txH = hexToHsl(sorted[sorted.length - 1]);
+    text = hslToHex(txH.h, txH.s * 0.5, 0.12);
+  }
+  if (lums.every((l) => l < 0.15)) {
+    const bgH = hexToHsl(sorted[0]);
+    bg = hslToHex(bgH.h, bgH.s * 0.3, 0.92);
+  }
+
+  // средние цвета: всё между самым светлым и самым тёмным
+  const middle = sorted.slice(1, -1);
+  const bySat = [...middle].sort((a, b) => hexToHsl(b).s - hexToHsl(a).s);
+  let accent = bySat[0] ?? sorted[0];
+  /* КОНТРАСТ АКЦЕНТА ДОВОДИТСЯ ЦИКЛОМ, А НЕ ОДНИМ ШАГОМ.
+     Одноразовый сдвиг к L=0.42 не спасал насыщенные светлые цвета
+     (циан #00BCC9 на светлом фоне давал 1.14:1 — акцент исчезал на
+     каждой третьей палитре набора). После контраста с фоном акцент
+     уводится из «мёртвой зоны» чернил — иначе на 15% палитр надпись
+     на акцентной кнопке не читалась ни белым, ни чёрным. */
+  accent = escapeInkDeadZone(forceContrast(accent, bg, 3), bg);
+
+  /* ПОВЕРХНОСТЬ — ОТТЕНОК ФОНА, А НЕ ЯРКАЯ СЕРЕДИНА ПАЛИТРЫ.
+     Роль surface — «фон карточки, чуть отличный от фона страницы».
+     Насыщенный средний цвет в этой роли превращал карточки в кричащие
+     блоки (73% палитр). Тон берём фоновый, светлость сдвигаем на 5%. */
+  const bgHsl = hexToHsl(bg);
+  /* Дельта 8%: на насыщенных тёплых фонах 5% светлости неотличимы —
+     карточки сливались с фоном на 6% палитр набора. */
+  const surface =
+    luminance(bg) > 0.5
+      ? hslToHex(bgHsl.h, Math.min(bgHsl.s, 0.25), Math.max(bgHsl.l - 0.08, 0))
+      : hslToHex(bgHsl.h, Math.min(bgHsl.s, 0.25), Math.min(bgHsl.l + 0.08, 1));
+
+  /* Линия обязана быть ВИДИМОЙ: дельта 12% светлости и порог 1.3:1 —
+     прежние 7% на пастельных фонах давали 1.1:1, разделители исчезали. */
+  let line =
+    bgHsl.l < 0.12
+      ? hslToHex(bgHsl.h, bgHsl.s, bgHsl.l + 0.12)
+      : hslToHex(bgHsl.h, bgHsl.s * 0.8, bgHsl.l - 0.12);
+  for (let i = 0; i < 8 && contrastRatio(line, bg) < 1.3; i += 1) {
+    const lH = hexToHsl(line);
+    line =
+      luminance(bg) > 0.5
+        ? hslToHex(lH.h, lH.s, Math.max(lH.l - 0.05, 0))
+        : hslToHex(lH.h, lH.s, Math.min(lH.l + 0.05, 1));
+  }
+
+  const midL = (bgHsl.l + hexToHsl(text).l) / 2;
+  const muted = forceContrast(hslToHex(hexToHsl(accent).h, 0.08, midL), bg, 4.5);
+
+  return { bg, surface, text, muted, line, accent, accentInk: inkFor(accent) };
+}
 
 /* ------------------------------------------------------------------ */
 /* Разрешение темы и токенов                                           */
@@ -263,12 +522,23 @@ let cacheVal: ResolvedTheme | null = null;
 
 export function resolveTheme(spec: ThemeSpec | undefined): ResolvedTheme {
   const s = spec ?? DEFAULT_THEME;
-  const key = `${s.preset}|${s.accent}`;
+  const key = `${s.preset}|${s.accent}|${s.palette?.join(",") ?? ""}`;
   if (cacheVal && cacheKey === key) return cacheVal;
   const def = PRESETS[s.preset] ?? PRESETS.minimal;
+  const paletteColors = s.palette ? paletteToColors(s.palette) : null;
+  const derived = paletteColors ?? def.derive(hexToHsl(s.accent), s.accent);
+  /* Страховка для ЛЮБОГО пресета: пользовательский акцент из пипетки
+     может попасть в «мёртвую зону» чернил (L ≈ 0.34-0.47) — тогда
+     надпись на акцентной кнопке не читается ни белым, ни чёрным.
+     Уводим акцент и пересчитываем чернила. */
+  const safeAccent = escapeInkDeadZone(derived.accent, derived.bg);
+  const colors =
+    safeAccent === derived.accent
+      ? derived
+      : { ...derived, accent: safeAccent, accentInk: inkFor(safeAccent) };
   const resolved: ResolvedTheme = {
     preset: s.preset,
-    colors: def.derive(hexToHsl(s.accent), s.accent),
+    colors,
     fonts: def.fonts,
     googleFamilies: def.googleFamilies,
     radius: def.radius,

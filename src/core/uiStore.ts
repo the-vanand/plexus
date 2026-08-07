@@ -31,6 +31,13 @@ interface UiState {
    * не должен восстанавливаться сам, иначе следующая правка «не там».
    */
   activeBreakpoint: string | null;
+  /**
+   * ЖИВОЙ ПРЕДПРОСМОТР ТЕМЫ (наведение на палитру/пресет).
+   * Живёт в интерфейсе, а не в документе: наведение — не правка, оно не
+   * должно попадать ни в файл проекта, ни в undo. Холст рисует документ
+   * с этой темой, пока поле не null.
+   */
+  themePreview: import("./themes").ThemeSpec | null;
 
   setLeftW: (w: number) => void;
   setRightW: (w: number) => void;
@@ -43,6 +50,7 @@ interface UiState {
   setImportWidth: (w: number) => void;
   setLeftTab: (t: "project" | "tools") => void;
   setActiveBreakpoint: (id: string | null) => void;
+  setThemePreview: (t: import("./themes").ThemeSpec | null) => void;
   resetLayout: () => void;
 }
 
@@ -92,6 +100,7 @@ export const useUi = create<UiState>()((set, get) => {
   return {
     ...load(),
     activeBreakpoint: null,
+    themePreview: null,
     setLeftW: (w) => set(after({ leftW: clamp(w, 160, 480) })),
     setRightW: (w) => set(after({ rightW: clamp(w, 200, 520) })),
     setBottomH: (h) => set(after({ bottomH: clamp(h, 100, 520) })),
@@ -104,6 +113,8 @@ export const useUi = create<UiState>()((set, get) => {
     setLeftTab: (leftTab) => set(after({ leftTab })),
     // без after(): активный брейкпоинт намеренно не сохраняется в localStorage
     setActiveBreakpoint: (activeBreakpoint) => set({ activeBreakpoint }),
-    resetLayout: () => set(after({ ...defaults, activeBreakpoint: null })),
+    // без after(): предпросмотр темы — мимолётное состояние наведения
+    setThemePreview: (themePreview) => set({ themePreview }),
+    resetLayout: () => set(after({ ...defaults, activeBreakpoint: null, themePreview: null })),
   };
 });

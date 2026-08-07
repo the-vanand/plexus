@@ -99,8 +99,11 @@ export function PixiCanvas({ onZoomChange }: { onZoomChange: (zoom: number) => v
         raf = 0;
         const s = useStore.getState();
         const c = controller!;
+        /* Живой предпросмотр темы: наведение на палитру подменяет тему
+           только в отрисовке — документ и undo не трогаются. */
+        const preview = useUi.getState().themePreview;
         renderer.render({
-          doc: view,
+          doc: preview ? { ...view, theme: preview } : view,
           rects,
           camera: c.camera,
           selection: s.selection,

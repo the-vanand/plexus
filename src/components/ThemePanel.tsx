@@ -1,15 +1,19 @@
 /**
- * Блок «Стиль сайта»: пресет + акцентный цвет (живёт в окне настроек проекта).
- * Палитра выводится свотчами — она вычисляется алгоритмом детерминированно
- * (см. core/themes.ts), поэтому результат всегда воспроизводим.
+ * Блок «Стиль сайта»: пресет + акцентный цвет + палитра (окно настроек
+ * проекта). Свотчи показывают то, что видит холст: при наведении на
+ * палитру — предпросмотр, иначе — тему документа. Цвета вычисляются
+ * детерминированно (см. core/themes.ts), результат воспроизводим.
  */
 import { useStore } from "../core/store";
+import { useUi } from "../core/uiStore";
 import { PRESETS, PRESET_IDS, resolveTheme, type PresetId } from "../core/themes";
+import { PalettePicker } from "./PalettePicker";
 
 export function ThemePanel() {
   const theme = useStore((s) => s.doc.theme);
   const setTheme = useStore((s) => s.setTheme);
-  const resolved = resolveTheme(theme);
+  const preview = useUi((s) => s.themePreview);
+  const resolved = resolveTheme(preview ?? theme);
 
   const swatches: Array<[string, string]> = [
     ["Фон", resolved.colors.bg],
@@ -49,11 +53,14 @@ export function ThemePanel() {
         {swatches.map(([label, color]) => (
           <span key={label} className="theme-swatch" title={`${label}: ${color}`} style={{ background: color }} />
         ))}
+        {theme?.palette && <span className="side-note">палитра активна</span>}
       </div>
       <div className="side-note">
         Шрифты: {resolved.fonts.heading.split(",")[0].replace(/'/g, "")} +{" "}
         {resolved.fonts.body.split(",")[0].replace(/'/g, "")}
       </div>
+
+      <PalettePicker />
     </div>
   );
 }
