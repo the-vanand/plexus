@@ -91,6 +91,8 @@ export function PixiCanvas({ onZoomChange }: { onZoomChange: (zoom: number) => v
           if (r) map[fid] = r.h;
         }
         (window as unknown as { __plxFrameContentH?: Record<string, number> }).__plxFrameContentH = map;
+        // фактические прямоугольники всех узлов — для кнопок выравнивания в инспекторе
+        (window as unknown as { __plxRects?: typeof rects }).__plxRects = rects;
       };
 
       const draw = (): void => {

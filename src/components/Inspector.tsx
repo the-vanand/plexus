@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { useStore } from "../core/store";
 import { useUi } from "../core/uiStore";
-import type { PaddingValue, SceneNode, Sides, SizeMode } from "../core/types";
+import type { PaddingValue, Rect, SceneNode, Sides, SizeMode } from "../core/types";
 import { NODE_LABELS, WIRE_ACTION_LABELS, packPadding, padBox, resolveNodeAt } from "../core/scene";
 import {
   COLOR_TOKENS, resolveColor, resolveTheme, SPACE_LABELS, SPACE_SCALE, type ResolvedTheme,
@@ -17,6 +17,61 @@ import {
 import { ICON_NAMES, iconGlyph } from "../core/codegen";
 
 /* ---------- маленькие контролы ---------- */
+
+/**
+ * Выравнивание узла внутри родителя (как кнопки в тулбаре Figma/Tilda).
+ * Absolute-узел двигается точными координатами по фактическим
+ * прямоугольникам (`__plxRects` из холста). Flow-узлу доступно
+ * горизонтальное центрирование — это `centered` (margin-inline: auto).
+ * Особенно удобно сажать иконку по центру кнопки-обводки.
+ */
+function AlignButtons({ node }: { node: SceneNode }) {
+  const updateLayout = useStore((s) => s.updateLayout);
+  /* Подписка на документ держит кнопки в такте с холстом: __plxRects
+     обновляется в цикле отрисовки, и без подписки компонент мог бы
+     читать прямоугольники, посчитанные до последней правки раскладки. */
+  useStore((s) => s.doc);
+  const rects = (window as unknown as { __plxRects?: Map<string, Rect> }).__plxRects;
+  const r = rects?.get(node.id);
+  const p = node.parent ? rects?.get(node.parent) : undefined;
+  if (node.layout.position !== "absolute") {
+    if (node.type === "frame") return null;
+    return (
+      <div className="field">
+        <label>Выравнивание в контейнере</label>
+        <div className="align-btns">
+          <button
+            type="button"
+            className={node.layout.centered ? "on" : ""}
+            title="Центрировать по горизонтали (margin: auto)"
+            onClick={() => updateLayout(node.id, { centered: !node.layout.centered })}
+          >
+            ↔ центр
+          </button>
+        </div>
+      </div>
+    );
+  }
+  if (!r || !p) return null;
+  const set = (patch: { x?: number; y?: number }) => updateLayout(node.id, patch);
+  return (
+    <div className="field">
+      <label>Выравнивание в контейнере</label>
+      <div className="align-rows">
+        <div className="align-btns">
+          <button type="button" title="К левому краю" onClick={() => set({ x: 0 })}>⇤</button>
+          <button type="button" title="Центр по горизонтали" onClick={() => set({ x: Math.round((p.w - r.w) / 2) })}>↔</button>
+          <button type="button" title="К правому краю" onClick={() => set({ x: Math.round(p.w - r.w) })}>⇥</button>
+        </div>
+        <div className="align-btns">
+          <button type="button" title="К верхнему краю" onClick={() => set({ y: 0 })}>⤒</button>
+          <button type="button" title="Центр по вертикали" onClick={() => set({ y: Math.round((p.h - r.h) / 2) })}>↕</button>
+          <button type="button" title="К нижнему краю" onClick={() => set({ y: Math.round(p.h - r.h) })}>⤓</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function SizeControl({
   label,
@@ -39,9 +94,9 @@ function SizeControl({
             onChange(m === "px" ? (typeof value === "number" ? value : 200) : (m as SizeMode));
           }}
         >
-          <option value="px">px</option>
-          <option value="hug">hug</option>
-          <option value="fill">fill</option>
+          <option value="px" title="Фиксированный размер в пикселях">px</option>
+          <option value="hug" title="Hug: размер по содержимому (fit-content)">hug</option>
+          <option value="fill" title="Fill: заполнить доступное место (flex: 1)">fill</option>
         </select>
         {mode === "px" && (
           <input
@@ -608,6 +663,8 @@ export function Inspector() {
             <NumberField label="Y" value={L.y} onChange={(y) => updateLayout(node.id, { y })} />
           </div>
         )}
+
+        {node.type !== "frame" && <AlignButtons node={node} />}
 
         <div className="row2">
           <SizeControl label="Ширина" value={L.width} onChange={(width) => updateLayout(node.id, { width })} />

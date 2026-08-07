@@ -124,6 +124,15 @@ export class InteractionController {
   private startRect: Rect = { x: 0, y: 0, w: 0, h: 0 };
   private startRotationDeg = 0;
   private startPointerAngle = 0;
+  /* Исходные режимы размера захватываются в начале жеста: ресайз по одной
+     оси не должен затирать hug/fill на другой (см. updateResize). */
+  private startSizeW: number | "hug" | "fill" = "hug";
+  private startSizeH: number | "hug" | "fill" = "hug";
+
+  /* Shift-перетаскивание (как в PowerPoint): ось выбирается по первому
+     движению и держится до конца жеста. */
+  private axisLock: "x" | "y" | null = null;
+  private dragStartWorld = { x: 0, y: 0 };
 
   // состояние тяги провода (режим «глазик») — читает рендерер
   wireDrag: { fromId: string; toX: number; toY: number } | null = null;
@@ -200,7 +209,24 @@ export class InteractionController {
     };
     if (near(H.rotate.x, H.rotate.y)) return "rotate";
     for (const key of HANDLE_KEYS) {
-      if (near(H.points[key].x, H.points[key].y)) return key;
+      if (near(H.points[key].x, H.points[key].y)) {
+        /* ХВАТКА ИЗНУТРИ — ЭТО ПЕРЕНОС, А НЕ РЕСАЙЗ.
+           У мелкого узла (иконка 16-24px) зоны ручек накрывают его
+           целиком: любая попытка перетащить превращалась в ресайз, и
+           элемент «расширялся вместо смены координат». Как в Figma:
+           ресайз начинается с границы или снаружи; точка глубже 3px
+           ВНУТРИ коробки принадлежит переносу. Проверка в локальных
+           осях узла, чтобы работала и на повёрнутых. */
+        const wpt = this.toWorld(s.x, s.y);
+        const cx = r.x + r.w / 2;
+        const cy = r.y + r.h / 2;
+        const loc = rotateVec(wpt.x - cx, wpt.y - cy, -a);
+        const inset = 3 / Math.max(this.camera.zoom, 0.05);
+        const deepInside =
+          Math.abs(loc.x) < r.w / 2 - inset && Math.abs(loc.y) < r.h / 2 - inset;
+        if (deepInside) return null;
+        return key;
+      }
     }
     return null;
   }
@@ -479,6 +505,8 @@ export class InteractionController {
     }
     this.startRect = { ...r };
     this.startRotationDeg = node.layout.rotation || 0;
+    this.startSizeW = node.layout.width;
+    this.startSizeH = node.layout.height;
     store.beginGesture();
     this.mode = "resize";
   }
@@ -510,16 +538,29 @@ export class InteractionController {
     const nx = ncx - newW / 2;
     const ny = ncy - newH / 2;
 
+    /* НЕТРОНУТАЯ ОСЬ СОХРАНЯЕТ РЕЖИМ РАЗМЕРА.
+       Ресайз писал ЧИСЛА по обеим осям всегда: потянул за нижнюю ручку —
+       и ширина «fill» молча стала фиксированными пикселями. Внешне ничего
+       не менялось, но узел переставал тянуться за родителем — а при
+       следующем пересчёте раскладки «неожиданно расширялся». Ось, за
+       которую пользователь не тянул, остаётся в своём режиме (hug/fill
+       или прежнее число).
+       УГЛОВАЯ РУЧКА ТЯНЕТ ОБЕ ОСИ — и обе честно становятся числами:
+       пользователь явно задал оба размера, как в Figma. Правило выше
+       касается только осей, не участвующих в жесте. */
+    const outW: number | "hug" | "fill" = hx !== 0 ? newW : typeof this.startSizeW === "number" ? newW : this.startSizeW;
+    const outH: number | "hug" | "fill" = hy !== 0 ? newH : typeof this.startSizeH === "number" ? newH : this.startSizeH;
+
     if (node.type === "frame") {
-      store.patchLayoutLive(node.id, { width: newW, height: newH, x: nx, y: ny });
+      store.patchLayoutLive(node.id, { width: outW, height: outH, x: nx, y: ny });
     } else if (node.layout.position === "absolute" && node.parent) {
       const p = this.hooks.getRects().get(node.parent);
       const px = p ? p.x : 0;
       const py = p ? p.y : 0;
-      store.patchLayoutLive(node.id, { width: newW, height: newH, x: nx - px, y: ny - py });
+      store.patchLayoutLive(node.id, { width: outW, height: outH, x: nx - px, y: ny - py });
     } else {
       // flow-узел: меняем только размер (в фикс px), позицию определяет раскладка
-      store.patchLayoutLive(node.id, { width: newW, height: newH });
+      store.patchLayoutLive(node.id, { width: outW, height: outH });
     }
     this.hooks.requestRender();
   }
@@ -566,6 +607,13 @@ export class InteractionController {
       return;
     }
     const isFree = node.layout.position === "absolute" || node.type === "frame";
+    /* Shift: ось выбирается по первому движению (как в PowerPoint) и
+       держится весь жест. Стартовая позиция запоминается для фиксации. */
+    const rect0 = this.hooks.getRects().get(this.dragId!);
+    if (rect0) this.dragStartWorld = { x: rect0.x, y: rect0.y };
+    const dxs = this.lastScreen.x - this.downScreen.x;
+    const dys = this.lastScreen.y - this.downScreen.y;
+    this.axisLock = Math.abs(dxs) >= Math.abs(dys) ? "x" : "y";
     if (isFree) {
       store.beginGesture(); // один снапшот на весь жест
       this.mode = "drag-abs";
@@ -584,6 +632,11 @@ export class InteractionController {
 
     const w = this.toWorld(s.x, s.y);
     const target: Rect = { ...rect, x: w.x - this.grabOffset.x, y: w.y - this.grabOffset.y };
+
+    /* Shift — движение по одной оси (как в PowerPoint): вторая ось
+       зафиксирована на стартовом значении жеста. */
+    if (this.shiftDown && this.axisLock === "x") target.y = this.dragStartWorld.y;
+    else if (this.shiftDown && this.axisLock === "y") target.x = this.dragStartWorld.x;
 
     /* привязка к сетке (Вид → Привязка к сетке): сначала сетка, потом умные направляющие */
     if (useUi.getState().gridSnap) {
@@ -608,6 +661,26 @@ export class InteractionController {
     const snap = computeSnap(target, siblingRects, this.camera.zoom);
     this.guides = snap.guides;
     this.badges = snap.badges;
+
+    /* При Shift зафиксированная ось не поддаётся и снапу: примагничивание
+       вдоль свободной оси остаётся, поперёк — нет. Плюс линия оси через
+       холст, чтобы ограничение было видно глазом. */
+    if (this.shiftDown && this.axisLock) {
+      const span = 100000;
+      if (this.axisLock === "x") {
+        snap.y = this.dragStartWorld.y;
+        this.guides = [
+          ...this.guides.filter((g) => g.axis !== "h"),
+          { axis: "h", at: this.dragStartWorld.y, from: target.x - span, to: target.x + span },
+        ];
+      } else {
+        snap.x = this.dragStartWorld.x;
+        this.guides = [
+          ...this.guides.filter((g) => g.axis !== "v"),
+          { axis: "v", at: this.dragStartWorld.x, from: target.y - span, to: target.y + span },
+        ];
+      }
+    }
 
     if (node.type === "frame") {
       store.moveAbsolute(node.id, snap.x, snap.y);
@@ -724,6 +797,7 @@ export class InteractionController {
     this.dragOutline = null;
     this.marquee = null;
     this.flowDropIndex = -1;
+    this.axisLock = null;
     this.el.style.cursor = "default";
     this.hooks.requestRender();
   };

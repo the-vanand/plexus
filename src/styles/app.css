@@ -380,6 +380,37 @@ button.tab {
   display: flex;
   gap: 6px;
 }
+/* Кнопки выравнивания узла внутри родителя (инспектор):
+   две отдельные группы — горизонталь и вертикаль */
+.align-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.align-btns {
+  display: flex;
+  gap: 4px;
+}
+.align-btns button {
+  flex: 1;
+}
+.align-btns button {
+  padding: 4px 6px;
+  font-size: 13px;
+  line-height: 1.2;
+  background: var(--panel-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+}
+.align-btns button:hover {
+  border-color: var(--accent, #7aa2ff);
+}
+.align-btns button.on {
+  border-color: var(--accent, #7aa2ff);
+  background: rgba(122, 162, 255, 0.15);
+}
 .size-control select {
   width: 64px;
   flex-shrink: 0;
